@@ -73,12 +73,45 @@ The gate runs **only** in a job that holds no model key (`commit` in
 gate the model's input can influence. The document it reads is assembled there,
 not in the job that holds the key.
 
+**The narration is body text. The digest owns the outline.** The template writes
+one H1 and a set of H2 sections; asked to "write the digest", a model writes a
+digest-shaped document with its own title and its own top-level sections. A live
+run returned **4 of the digest's 9 headings** — its own
+`# Dependency digest — observed …` plus `## Act`, `## Watch` and `## Other`, level
+with the template's `## Act on these`. The symptom a reader notices is a
+duplicated title; the defect is that the model wrote half the document's
+structure, and a fix aimed at the title alone leaves `## Act` beside
+`## Act on these`.
+
+So `narrationBody()` drops the leading H1 (ATX or setext) and **clamps** every
+other heading to H3 or deeper — clamped, never promoted, so nothing the model
+writes can collide with a template section or become a second H1. The model's own
+grouping survives one level down, because those labels are load-bearing.
+
+**It runs in the renderer, after the gate, and that ordering is the point.**
+`unfence()` normalises the model's answer in the narrate job, *before* the gate;
+this runs *after* it. Normalising structure before the gate would delete the
+evidence the gate exists to read — an invented number inside a title would simply
+vanish and the run would look clean. A presentation fix must never run upstream
+of the control.
+
+A narration that reduces to nothing but a title is rendered as a **gap**, not as
+silence: `prose.md` only exists on the success path, so a run that answered `200`
+and wrote a title would otherwise be byte-identical to a deliberately keyless
+instance — the failure `narration.json` exists to prevent, by a new route.
+
 - **Enforced by:** `lib/gate.mjs`, called from `scripts/commit-step.mjs` and
   `scripts/reply-step.mjs`; unit-tested in `tests/gate.test.mjs`.
 - **Enforced by:** `lib/render.mjs` → `buildFacts(payload)`, whose arity is the
   check. `tests/gate.test.mjs` asserts that a numeric severity is groundable
   against the document and *not* against the bare payload, so the projection
   cannot become a no-op unnoticed.
+- **Enforced by:** `lib/render.mjs` → `narrationBody()`. `tests/render.test.mjs`
+  asserts the class, not a string: for eight narration shapes — the real live
+  prose, a title-only answer, a setext title, a collision by name, a deep
+  heading, an empty heading — the rendered digest has **exactly one H1**, and
+  every H2 in it is one the template wrote. Reverting the clamp alone fails three
+  of those.
 - **Hard limit:** the gate is exact and deterministic and must stay that way. A
   paraphrase-tolerant second pass may only ever *queue a sentence for human
   review*. It must never gate a commit.

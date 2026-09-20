@@ -16,6 +16,7 @@ import {
   MARKER_END,
   buildFacts,
   attachDecisions,
+  narrationBody,
   renderDigest,
   renderReadmeSection,
   renderSummary,
@@ -61,6 +62,120 @@ test('narration sits on top of the deterministic digest, it does not replace it'
   const md = renderDigest({ payload: payload(), decisions, narration: 'Three things moved.' });
   assert.match(md, /Three things moved\./);
   assert.match(md, /## Act on these/, 'the table is still there');
+});
+
+/* The narration is body text. The digest owns the outline. */
+
+const LIVE_PROSE = [
+  '# Dependency digest — observed 2026-09-20T19:29:40.852Z',
+  '',
+  '## Act',
+  '',
+  '**express — pinned 4.18.2** (we import express)',
+  '- GHSA-qw6h-vgh9-j6wx — fixed in 4.20.0 — severity 5',
+  '',
+  '## Watch',
+  '',
+  '**lodash — pinned 4.17.21** (affected, not on an imported symbol)',
+  '',
+  '## Other',
+  '',
+  '- nodejs/node released v26.9.0 on 2026-09-16.',
+].join('\n');
+
+/** Every H2 the template itself can write, for the outline assertions below. */
+const TEMPLATE_H2 = new Set([
+  '## Act on these',
+  '## Affected, no fix published',
+  '## Needs your call',
+  '## Affected, not on your path',
+  '## Clear',
+  '## Upstream releases',
+  '## Gaps in this run',
+  '## Commands received',
+]);
+
+test('the narration cannot own the digest outline, whatever shape it arrives in', () => {
+  // The first fixture is the real thing: the prose a live `deepseek-v4-flash`
+  // run returned, which wrote **4 of the digest's 9 headings** — a title, and
+  // `## Act` / `## Watch` / `## Other` level with the template's own sections.
+  // See `.workbuddy-ai/evidence/live-run-2026-09-21.md`.
+  //
+  // The rest are the shapes a fix aimed only at "the leading H1" would miss.
+  const shapes = [
+    LIVE_PROSE,
+    '# Dependency digest', // a title and nothing else
+    'Dependency digest\n==================\n\nBody text.', // setext is an H1 on GitHub
+    '### Already deep\n\nText.', // must not be promoted
+    '## Act on these\n\nText.', // collides with a template section by name
+    'No headings at all.',
+    '####### seven hashes is a paragraph, not a heading',
+    '# \n\n# Real title\n\nBody.', // an empty heading is not a heading
+  ];
+
+  for (const narration of shapes) {
+    const label = JSON.stringify(narration.slice(0, 34));
+    const md = renderDigest({
+      payload: payload(),
+      decisions,
+      narration,
+      narrationStatus: { configured: true, ok: true, kind: null, status: 200 },
+    });
+
+    const h1 = md.split('\n').filter((l) => /^#\s/.test(l));
+    assert.equal(h1.length, 1, `exactly one H1, for ${label}`);
+    assert.equal(h1[0], '# Dependency digest', `and it is the template's, for ${label}`);
+
+    // The stronger half: nothing the model wrote may sit at the template's own
+    // outline level. A fix that only dropped the title would leave `## Act`
+    // beside `## Act on these` and still read as a duplicated document.
+    for (const line of md.split('\n')) {
+      if (!/^##\s/.test(line)) continue;
+      assert.ok(TEMPLATE_H2.has(line), `an H2 the template did not write, for ${label}: ${line}`);
+    }
+  }
+});
+
+test('the narration keeps its own grouping, one level down', () => {
+  const md = renderDigest({ payload: payload(), decisions, narration: LIVE_PROSE });
+  assert.match(md, /^### Act$/m, 'the model grouping survives as a sub-level');
+  assert.match(md, /^### Watch$/m);
+  assert.match(md, /^### Other$/m);
+  assert.doesNotMatch(md, /Dependency digest — observed/, 'and the restated title is gone');
+  assert.match(md, /GHSA-qw6h-vgh9-j6wx/, 'the prose itself is untouched');
+});
+
+test('a narration that reduces to a title is a gap, not a quiet success', () => {
+  // The same failure `narration.json` exists to prevent, by a new route:
+  // `prose.md` only exists on the success path, so a run that answered 200 and
+  // wrote a title would otherwise be byte-identical to a deliberately keyless
+  // instance. Dropping the title must not turn a visible narration into an
+  // invisible one.
+  const md = renderDigest({
+    payload: payload(),
+    decisions,
+    narration: '# Dependency digest\n',
+    narrationStatus: { configured: true, ok: true, kind: null, status: 200 },
+  });
+  assert.match(md, /## Gaps in this run/);
+  assert.match(md, /`narration`/);
+  assert.match(md, /wrote a title and nothing else/);
+  assert.equal(md.split('\n').filter((l) => /^#\s/.test(l)).length, 1);
+});
+
+test('narrationBody is the outline rule, stated once', () => {
+  assert.equal(
+    narrationBody('# Dependency digest — observed 2026-01-01T00:00:00.000Z\n\n## Act\n\n- one'),
+    '### Act\n\n- one',
+  );
+  assert.equal(narrationBody('## Act\n'), '### Act');
+  assert.equal(narrationBody('### Deep\n#### Deeper'), '### Deep\n#### Deeper', 'clamped, never promoted');
+  assert.equal(narrationBody('Dependency digest\n=====\n\nBody'), 'Body', 'setext title is a title');
+  assert.equal(narrationBody('# Dependency digest'), '', 'a title alone leaves nothing');
+  assert.equal(narrationBody('####### seven hashes is a paragraph'), '####### seven hashes is a paragraph');
+  assert.equal(narrationBody('# \n\nBody'), 'Body', 'an empty heading is not a heading');
+  assert.equal(narrationBody(''), '');
+  assert.equal(narrationBody(null), '', 'and it never throws on a missing narration');
 });
 
 test('a failed source is rendered, not hidden', () => {
@@ -283,6 +398,25 @@ test('a link keeps its href and is marked nofollow', () => {
   const html = markdownToHtml('- see [the advisory](https://example.invalid/a)');
   assert.match(html, /href="https:\/\/example\.invalid\/a"/);
   assert.match(html, /rel="noopener noreferrer nofollow"/);
+});
+
+test('the embedding drops the digest title, so the published page has one H1', () => {
+  // The page shell writes `<h1>Dependency digest</h1>` in its header. Embedding
+  // the document's own H1 under it produced two identical H1 elements on the
+  // published page — the same duplicate a reader reported, from the template
+  // rather than from the model. Read on its own in `digest/`, the markdown keeps
+  // its title; only the embedding drops it.
+  const doc = '# Dependency digest\n\n**As of x**\n\n## Act on these\n\n| A |\n|---|\n| 1 |\n';
+  assert.equal(markdownToHtml(doc).match(/<h1>/g).length, 1, 'standalone, the document keeps its title');
+
+  const embedded = markdownToHtml(doc, { skipLeadingH1: true });
+  assert.equal((embedded.match(/<h1>/g) ?? []).length, 0, 'embedded, the page shell supplies the only H1');
+  assert.match(embedded, /<h2>Act on these<\/h2>/, 'and nothing else moved');
+  assert.match(embedded, /<table>/, 'the table is still rendered');
+
+  const setext = markdownToHtml('Title\n=====\n\nBody', { skipLeadingH1: true });
+  assert.doesNotMatch(setext, /<h1>/, 'the setext form is dropped too');
+  assert.doesNotMatch(setext, /Title/, 'and the title text does not survive as a paragraph');
 });
 
 /* ---------------------------------------------------------------- facts --- */

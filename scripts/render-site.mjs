@@ -272,13 +272,18 @@ function main() {
   const write = (rel, content) => writeIfChanged(rel, content, { allowlist: CI_ALLOWLIST });
 
   // Content, kept out of the page source.
+  //
+  // The digest keeps its own H1 in `digest/*.md`, where it is the only title the
+  // reader sees. Here it is embedded under a page header that already carries
+  // one, so the document's title is dropped rather than rendered twice: without
+  // this the published page holds two identical `<h1>Dependency digest</h1>`.
   write(
     path.join(SITE_DATA, 'digest.json'),
     {
       date: digest?.date ?? null,
       observed_at: summary?.observed_at ?? null,
       markdown: digest?.markdown ?? null,
-      html: digest ? markdownToHtml(digest.markdown) : null,
+      html: digest ? markdownToHtml(digest.markdown, { skipLeadingH1: true }) : null,
     },
   );
 

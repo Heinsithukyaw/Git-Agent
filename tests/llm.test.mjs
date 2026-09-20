@@ -309,10 +309,32 @@ test('the prompt states the language without translating the identifiers', () =>
   assert.match(system.content, /do not translate them/);
 });
 
+test('the prompt says where the narration sits in the document', () => {
+  // Not the control — `narrationBody()` in the renderer is — but a model told it
+  // is writing a body writes a body, which is cheaper than discarding a title on
+  // every run. The rule permits subheadings on purpose: the model's own grouping
+  // is useful, and the renderer only needs it kept below the template's.
+  const [system] = narrationMessages({ facts: ['x'] });
+  assert.match(system.content, /Do not write a top-level title/);
+  assert.match(system.content, /Subheadings .*are welcome/);
+});
+
 test('a fenced answer is unwrapped, and an unfenced one is left alone', () => {
   assert.equal(unfence('```markdown\n# hi\n```'), '# hi');
   assert.equal(unfence('```\n# hi\n```'), '# hi');
   assert.equal(unfence('# hi'), '# hi');
   // A fence in the middle is content, not a wrapper.
   assert.equal(unfence('text\n```\ncode\n```'), 'text\n```\ncode\n```');
+});
+
+test('the narrate job leaves structure in place for the gate to read', () => {
+  // This is the ordering constraint, pinned where the mistake would be made.
+  // `unfence` runs in the narrate job, *before* the containment gate, so it may
+  // unwrap a fence — a transport artefact — and nothing else. Normalising the
+  // document's structure here would delete evidence the gate exists to read: an
+  // invented number inside a title would simply vanish and the run would look
+  // clean. `narrationBody()` in the renderer does that work, after the gate.
+  const titled = '# Dependency digest\n\nBody text.';
+  assert.equal(unfence(titled), titled);
+  assert.equal(unfence('```markdown\n# Dependency digest\n```'), '# Dependency digest');
 });
