@@ -1,0 +1,25 @@
+{
+  "name": "git-agent",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": ">=22"
+  },
+  "description": "A serverless, git-native agent that watches your stack and narrates a daily digest. No server, no database, no front-end build step.",
+  "scripts": {
+    "test": "node --test \"tests/*.test.mjs\"",
+    "check": "node tools/check-invariants.mjs",
+    "probe": "node scripts/probe-step.mjs",
+    "fetch": "node scripts/fetch-step.mjs",
+    "narrate": "node scripts/narrate-step.mjs",
+    "commit:step": "node scripts/commit-step.mjs",
+    "site": "node scripts/render-site.mjs",
+    "verify:all": "npm run check && npm test"
+  },
+  "dependencies": {},
+  "devDependencies": {},
+  "comments": {
+    "dependencies": "Intentionally empty. The agent runs on Node built-ins only: fetch, node:crypto, node:fs, node:test. Every added dependency is a supply-chain surface on a job that holds a write token."
+  }
+}

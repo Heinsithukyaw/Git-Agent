@@ -1,0 +1,18 @@
+# Generated at runtime, never committed by hand
+.run/
+*.local.mjs
+
+# Node
+node_modules/
+
+# Editor / OS
+.DS_Store
+*.swp
+.idea/
+.vscode/
+
+# The agent's own scratch. Payloads and prose are artifacts in CI; locally they
+# land here so a dry run does not dirty the working tree.
+.run/payload.json
+.run/prose.md
+.run/answer.md

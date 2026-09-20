@@ -1,0 +1,93 @@
+name: ci
+
+# The rules in AGENTS.md, executed.
+#
+# The invariants that matter here are the ones that erode silently: a job that
+# quietly acquires both a key and a write token, a gate that drifts into a
+# narrating job, a provider name that appears in a client. None of those break a
+# test. All of them break the design.
+
+on:
+  push:
+    branches: ['**']
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: test
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Invariants
+        run: node tools/check-invariants.mjs
+
+  # A write-path check that does not need a write token: run the collector
+  # against the real data files and assert nothing landed outside the allowlist.
+  writes:
+    name: writes
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Assert bounded writes
+        run: |
+          set -euo pipefail
+          node tools/check-invariants.mjs --allowlist
+          node -e "
+            import('./lib/store.mjs').then(({ assertWritable, COLLECTOR_ALLOWLIST }) => {
+              const bad = ['src/index.ts', '../escape', 'lib/store.mjs', '.github/workflows/digest.yml'];
+              let refused = 0;
+              for (const p of bad) {
+                try { assertWritable(p, COLLECTOR_ALLOWLIST); }
+                catch { refused++; }
+              }
+              if (refused !== bad.length) { console.error('allowlist refused only ' + refused + ' of ' + bad.length); process.exit(1); }
+              console.log('allowlist refused all ' + refused + ' out-of-scope paths');
+            });
+          "
+
+  formatting:
+    name: no-secrets-in-tree
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Assert no credential is committed
+        run: |
+          set -euo pipefail
+          if git grep -nIE '(sk-[A-Za-z0-9]{20,}|ghp_[A-Za-z0-9]{30,}|github_pat_[A-Za-z0-9_]{40,})' -- . ; then
+            echo "::error::a credential-shaped string is committed"
+            exit 1
+          fi
+          echo "no credential-shaped strings in the tree"

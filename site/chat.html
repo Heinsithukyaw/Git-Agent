@@ -1,0 +1,137 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Ask the agent</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #14181f; --muted: #5b6675; --line: #e3e7ec;
+    --card: #f7f9fb; --accent: #0b62d6; --warn-bg: #fff8e1; --warn-line: #e6c15a;
+    --ok: #1a7f37; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa7b4; --line: #232a33;
+      --card: #131a22; --accent: #58a6ff; --warn-bg: #2a2413; --warn-line: #7a6420;
+      --ok: #3fb950; --bad: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 16px calc(24px + env(safe-area-inset-bottom));
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header { padding: 20px 0 8px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  nav { display: flex; gap: 14px; padding: 10px 0 0; font-size: 14px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a[aria-current="page"] { color: var(--fg); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0 0; }
+  .stat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; min-width: 92px;
+  }
+  .stat b { display: block; font-size: 20px; line-height: 1.2; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .live { font-size: 13px; color: var(--muted); padding: 10px 0 0; }
+  .live b { color: var(--ok); }
+  .live b.bad { color: var(--bad); }
+  main { padding: 16px 0; }
+  main h2 { font-size: 17px; margin: 22px 0 8px; }
+  main h3 { font-size: 15px; margin: 18px 0 6px; }
+  main table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+  main th, main td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  main th { color: var(--muted); font-weight: 600; }
+  main code { background: var(--card); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  main blockquote {
+    margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--warn-line);
+    background: var(--warn-bg); color: var(--fg);
+  }
+  footer { border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Ask the agent</h1>
+  <p class="sub">A git-native agent: the repository is the state, and every turn is a fresh job.</p>
+  <nav>
+    <a href="./index.html">Digest</a>
+    <a href="./chat.html" aria-current="page">Ask</a>
+  </nav>
+</header>
+
+
+<p>This page composes a command and hands it to GitHub. It does not run anything, hold a
+credential, or call a model: you press the button, you are already signed in, and the reply
+lands as a comment in the thread.</p>
+<form id="composer">
+  <p>
+    <label for="verb">Command</label><br>
+    <select id="verb" name="verb" style="width:100%;max-width:520px;padding:10px;font-size:16px;">
+        <option value="why">why &lt;pkg&gt; — Look up the stored decision. No model.</option>
+        <option value="what-changed">what-changed — Everything that moved since the last run. No model.</option>
+        <option value="bump">bump &lt;pkg&gt; — Open a pull request; optionally run the suite in the sandbox.</option>
+        <option value="verify">verify &lt;pr&gt; — Run the suite against a patch in the sandbox.</option>
+        <option value="wrong">wrong &lt;pkg&gt; — Record that the decision was wrong. This is the calibration signal.</option>
+        <option value="pause">pause — Skip the schedule until resumed.</option>
+        <option value="resume">resume — Resume the schedule.</option>
+        <option value="explain">explain &lt;GHSA-…&gt; — The only verb that calls a model. Answer is marked unverified.</option>
+    </select>
+  </p>
+  <p>
+    <label for="arg">Argument</label><br>
+    <input id="arg" name="arg" type="text" placeholder="lodash" autocomplete="off"
+           style="width:100%;max-width:520px;padding:10px;font-size:16px;">
+  </p>
+  <p id="preview" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);
+     border:1px solid var(--line);border-radius:6px;padding:10px;max-width:520px;">/agent why</p>
+  <p>
+    <button type="submit" style="padding:10px 16px;font-size:16px;">Open as a GitHub issue</button>
+  </p>
+</form>
+<p style="color:var(--muted);font-size:13px;">
+  The reply is asynchronous — a job has to start, and that takes a minute, not a second.
+  That is the price of there being no server.
+</p>
+<script>
+  const REPO = "local/git-agent";
+  const verb = document.getElementById('verb');
+  const arg = document.getElementById('arg');
+  const preview = document.getElementById('preview');
+
+  function command() {
+    const a = arg.value.trim();
+    return a ? '/agent ' + verb.value + ' ' + a : '/agent ' + verb.value;
+  }
+  function render() { preview.textContent = command(); }
+
+  verb.addEventListener('change', render);
+  arg.addEventListener('input', render);
+  render();
+
+  document.getElementById('composer').addEventListener('submit', (event) => {
+    event.preventDefault();
+    // The title carries the command as well as the body, because the workflow
+    // guard reads the title prefix and the parser reads the body. Both are
+    // needed, and neither is trusted: the author gate and the grammar run
+    // server-side regardless of what this page sends.
+    const body = command() + '\n\n<!-- submitted from the composer -->';
+    const url = 'https://github.com/' + REPO + '/issues/new'
+      + '?title=' + encodeURIComponent(command())
+      + '&body=' + encodeURIComponent(body);
+    window.open(url, '_blank', 'noopener');
+  });
+</script>
+
+<footer>
+  Generated from the repository by a scheduled job. Nothing on this page is generated in a browser:
+  there is no key here, and no model is called.
+</footer>
+</div>
+</body>
+</html>

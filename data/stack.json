@@ -1,0 +1,80 @@
+{
+  "packages": [
+    {
+      "name": "express",
+      "ecosystem": "npm",
+      "pinned": "4.18.2",
+      "usage": {
+        "imported_symbols": ["express", "Router", "json", "urlencoded"],
+        "call_sites": ["src/server.ts:14", "src/routes/index.ts:9"],
+        "runtime": "node"
+      }
+    },
+    {
+      "name": "lodash",
+      "ecosystem": "npm",
+      "pinned": "4.17.21",
+      "usage": {
+        "imported_symbols": ["merge", "get", "set"],
+        "call_sites": ["src/config/merge.ts:41"],
+        "runtime": "node"
+      }
+    },
+    {
+      "name": "react",
+      "ecosystem": "npm",
+      "pinned": "18.2.0",
+      "usage": {
+        "imported_symbols": ["createElement", "useState"],
+        "call_sites": ["src/ui/App.tsx:1"],
+        "runtime": "browser"
+      }
+    },
+    {
+      "name": "requests",
+      "ecosystem": "PyPI",
+      "pinned": "2.31.0",
+      "usage": {
+        "imported_symbols": ["Session", "get"],
+        "call_sites": ["app/client.py:22"],
+        "runtime": "python"
+      }
+    },
+    {
+      "name": "serde",
+      "ecosystem": "crates.io",
+      "pinned": "1.0.188",
+      "usage": {
+        "imported_symbols": ["Deserialize", "Serialize"],
+        "call_sites": ["src/model.rs:3"],
+        "runtime": "native"
+      }
+    },
+    {
+      "name": "github.com/gin-gonic/gin",
+      "ecosystem": "Go",
+      "pinned": "v1.9.1",
+      "usage": {
+        "imported_symbols": ["Default", "Context"],
+        "call_sites": ["cmd/api/main.go:18"],
+        "runtime": "native"
+      }
+    }
+  ],
+  "watch": {
+    "upstreams": ["nodejs/node"],
+    "feeds": ["https://github.blog/changelog/feed/"]
+  },
+  "notes": [
+    "`packages` is both the watch list and the argument allowlist: /agent bump <pkg> only",
+    "accepts a name that appears here. That is what removes the shell-interpolation",
+    "surface — an argument that is not in this file never becomes a command.",
+    "",
+    "`usage` is what lets the rules tier reach a verdict without a model. Without",
+    "imported_symbols the reachability question is unanswerable, and every affected",
+    "package lands in `uncertain` rather than in `act` or `watch`.",
+    "",
+    "`pinned` should match the lockfile. If it does not, the version arithmetic is",
+    "answering a question about a version you are not running."
+  ]
+}

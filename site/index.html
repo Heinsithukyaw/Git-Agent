@@ -1,0 +1,105 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Dependency digest</title>
+<style>
+  :root {
+    --bg: #ffffff; --fg: #14181f; --muted: #5b6675; --line: #e3e7ec;
+    --card: #f7f9fb; --accent: #0b62d6; --warn-bg: #fff8e1; --warn-line: #e6c15a;
+    --ok: #1a7f37; --bad: #b3261e;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa7b4; --line: #232a33;
+      --card: #131a22; --accent: #58a6ff; --warn-bg: #2a2413; --warn-line: #7a6420;
+      --ok: #3fb950; --bad: #f85149;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 0 16px calc(24px + env(safe-area-inset-bottom));
+    background: var(--bg); color: var(--fg);
+    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  .wrap { max-width: 860px; margin: 0 auto; }
+  header { padding: 20px 0 8px; border-bottom: 1px solid var(--line); }
+  h1 { font-size: 20px; margin: 0 0 4px; }
+  .sub { color: var(--muted); font-size: 13px; margin: 0; }
+  nav { display: flex; gap: 14px; padding: 10px 0 0; font-size: 14px; }
+  nav a { color: var(--accent); text-decoration: none; }
+  nav a[aria-current="page"] { color: var(--fg); font-weight: 600; }
+  .stats { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0 0; }
+  .stat {
+    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
+    padding: 8px 12px; min-width: 92px;
+  }
+  .stat b { display: block; font-size: 20px; line-height: 1.2; }
+  .stat span { color: var(--muted); font-size: 12px; }
+  .live { font-size: 13px; color: var(--muted); padding: 10px 0 0; }
+  .live b { color: var(--ok); }
+  .live b.bad { color: var(--bad); }
+  main { padding: 16px 0; }
+  main h2 { font-size: 17px; margin: 22px 0 8px; }
+  main h3 { font-size: 15px; margin: 18px 0 6px; }
+  main table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
+  main th, main td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  main th { color: var(--muted); font-weight: 600; }
+  main code { background: var(--card); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  main blockquote {
+    margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--warn-line);
+    background: var(--warn-bg); color: var(--fg);
+  }
+  footer { border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 12px; }
+</style>
+</head>
+<body>
+<div class="wrap">
+<header>
+  <h1>Dependency digest</h1>
+  <p class="sub">A git-native agent: the repository is the state, and every turn is a fresh job.</p>
+  <nav>
+    <a href="./index.html" aria-current="page">Digest</a>
+    <a href="./chat.html">Ask</a>
+  </nav>
+</header>
+
+<div class="stats">
+  <div class="stat"><b>—</b><span>to act on</span></div>
+  <div class="stat"><b>—</b><span>needing your call</span></div>
+  <div class="stat"><b>—</b><span>clear</span></div>
+  <div class="stat"><b>—</b><span>advisories</span></div>
+  <div class="stat"><b>—</b><span>packages watched</span></div>
+  <div class="stat"><b>—</b><span>sources failed</span></div>
+</div>
+<p class="live">No run recorded yet.</p>
+<main id="digest" aria-live="polite">
+  <p><em>Loading the latest digest…</em></p>
+  <noscript>
+    <p>This page renders the digest with JavaScript. The same content is committed as Markdown
+    under <code>digest/</code> in the repository.</p>
+  </noscript>
+</main>
+<script>
+  // Reads files this job wrote into site/data/. Nothing else is contacted.
+  (async () => {
+    const main = document.getElementById('digest');
+    try {
+      const res = await fetch('./data/digest.json', { cache: 'no-store' });
+      if (!res.ok) throw new Error(String(res.status));
+      const doc = await res.json();
+      main.innerHTML = doc.html || '<p>No digest has been published yet.</p>';
+    } catch (err) {
+      main.innerHTML = '<p>The digest could not be loaded. It is committed as Markdown under <code>digest/</code>.</p>';
+    }
+  })();
+</script>
+
+<footer>
+  Generated from the repository by a scheduled job. Nothing on this page is generated in a browser:
+  there is no key here, and no model is called.
+</footer>
+</div>
+</body>
+</html>

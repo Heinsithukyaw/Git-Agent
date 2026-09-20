@@ -1,0 +1,149 @@
+name: sandbox
+
+# Opt-in execution. Off by default (I7): the strongest property this template
+# has is that the default instantiation runs no third-party code at all.
+#
+# permissions: {}  — this workflow can do nothing to the repository.
+# No secrets.     — the sandbox never receives a credential. That is the whole
+#                   reason a sandbox is needed here, because on a hosted runner
+#                   the machine is disposable and there is nothing else worth
+#                   stealing.
+#
+# Inputs arrive as base64. That is not obfuscation, it is the mitigation: a
+# patch or a command interpolated straight into a `run:` block is shell
+# interpolation, and the base64 alphabet cannot contain a shell metacharacter.
+# It also means nothing here needs a checkout, which is why permissions can
+# stay empty.
+
+on:
+  workflow_call:
+    inputs:
+      patch_b64:
+        description: Unified diff to apply, base64 encoded
+        type: string
+        required: false
+        default: ''
+      command_b64:
+        description: Command to run inside the container, base64 encoded
+        type: string
+        required: true
+      image:
+        description: Container image
+        type: string
+        required: false
+        default: 'node:22-alpine'
+      network:
+        description: none (default) or bridge
+        type: string
+        required: false
+        default: 'none'
+    outputs:
+      exit_code:
+        description: Exit code of the sandboxed command
+        value: ${{ jobs.run.outputs.exit_code }}
+      log_tail:
+        description: Last 2 KB of combined output
+        value: ${{ jobs.run.outputs.log_tail }}
+
+  workflow_dispatch:
+    inputs:
+      command_b64:
+        description: Command to run inside the container, base64 encoded
+        type: string
+        required: true
+      image:
+        description: Container image
+        type: string
+        required: false
+        default: 'node:22-alpine'
+      network:
+        description: none (default) or bridge
+        type: string
+        required: false
+        default: 'none'
+
+permissions: {}
+
+jobs:
+  run:
+    name: run
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    outputs:
+      exit_code: ${{ steps.exec.outputs.exit_code }}
+      log_tail: ${{ steps.exec.outputs.log_tail }}
+    steps:
+      # Rule 1, asserted rather than assumed: no credential-shaped variable may
+      # exist in this job's environment.
+      - name: Assert no credential is present
+        run: |
+          set -euo pipefail
+          if env | grep -Ei '^(LLM_API_KEY|JEV_API_KEY|GITHUB_TOKEN|GH_TOKEN)=' ; then
+            echo "::error::a credential reached the sandbox job"
+            exit 1
+          fi
+          echo "no credential in the sandbox environment"
+
+      - name: Decode inputs
+        id: decode
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/prepared
+          printf '%s' '${{ inputs.command_b64 }}' | base64 -d > /tmp/prepared/step.sh
+          if [ -n '${{ inputs.patch_b64 }}' ]; then
+            printf '%s' '${{ inputs.patch_b64 }}' | base64 -d > /tmp/prepared/step.patch
+          fi
+          echo "prepared $(ls -la /tmp/prepared | tail -n +2 | wc -l) file(s)"
+
+      # The test that matters. The runner has passwordless sudo, so anything
+      # running as the runner user can control the host. The boundary must be
+      # enforced from outside the untrusted process — and if sudo works inside
+      # the container, the sandbox has already leaked.
+      - name: Assert sudo does not work inside
+        run: |
+          set -euo pipefail
+          out=$(docker run --rm \
+            --network none \
+            --read-only --tmpfs /work:rw,size=256m \
+            --user 65534:65534 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 128 --memory 2g --cpus 2 \
+            -v /tmp/prepared:/work:ro \
+            -w /work --entrypoint /bin/sh \
+            '${{ inputs.image }}' -c 'sudo -n true 2>&1; echo "exit=$?"' || true)
+          echo "$out"
+          if echo "$out" | grep -q 'exit=0'; then
+            echo "::error::sudo succeeded inside the container — the sandbox has leaked"
+            exit 1
+          fi
+          echo "sudo is not usable inside the container"
+
+      - name: Execute
+        id: exec
+        run: |
+          set -euo pipefail
+          set +e
+          log=$(docker run --rm \
+            --network '${{ inputs.network }}' \
+            --read-only --tmpfs /work:rw,size=256m \
+            --user 65534:65534 \
+            --cap-drop ALL --security-opt no-new-privileges \
+            --pids-limit 128 --memory 2g --cpus 2 \
+            -e LLM_API_KEY= -e GITHUB_TOKEN= \
+            -v /tmp/prepared:/work:ro \
+            -w /work --entrypoint /bin/sh \
+            '${{ inputs.image }}' /work/step.sh 2>&1)
+          code=$?
+          set -e
+          echo "exit_code=$code" >> "$GITHUB_OUTPUT"
+          {
+            echo 'log_tail<<GIT_AGENT_LOG'
+            printf '%s' "$log" | tail -c 2048
+            echo 'GIT_AGENT_LOG'
+          } >> "$GITHUB_OUTPUT"
+          echo "sandboxed command exited $code"
+
+      - name: Record
+        if: ${{ always() }}
+        run: |
+          echo "exit=${{ steps.exec.outputs.exit_code }}"

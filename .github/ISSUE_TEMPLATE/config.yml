@@ -1,0 +1,6 @@
+# Blank issues stay enabled on purpose.
+#
+# The composer builds a URL that carries the command directly in the body, which
+# only works on the blank-issue path. Disabling it would break the page's only
+# route to the agent, and a page whose button does nothing is worse than no page.
+blank_issues_enabled: true

@@ -1,0 +1,198 @@
+name: ask
+
+# The input surface. A comment is a command; a reply is a comment.
+#
+# `issue_comment` is a PRIVILEGED trigger: it runs in the context of the default
+# branch with the repository's secrets available. On a public repository any
+# GitHub user can leave a comment. So the author gate is not a formality — it is
+# the difference between an agent and a public model proxy paid for by the user.
+#
+# Three jobs, again split on privilege (I1):
+#
+#   route    contents: write, issues: write   no secrets  author gate, grammar,
+#                                                         idempotency, lookups
+#   explain  contents: read                   holds key   the only model call
+#   reply    contents: write, issues: write   no secrets  gate, then post
+#
+# Seven of the eight verbs never reach `explain`. The cheapest and most trustworthy
+# answer is a lookup, not a generation.
+
+on:
+  issue_comment:
+    types: [created]
+  # The composer cannot prefill a comment body — GitHub has no URL parameter for
+  # it — so it opens a prefilled *issue* instead. An opened issue is therefore a
+  # second shape of the same command, and it is admitted only when its title
+  # begins with `/agent`. A title prefix rather than a label, deliberately: a
+  # label has to exist for the guard to pass, and a guard that silently never
+  # fires is worse than no guard. Everything downstream is unchanged — the
+  # author gate, the grammar and the argument validator do not care which event
+  # delivered the text.
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-agent-ask-${{ github.event_name == 'issues' && github.event.issue.number || github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  # ----------------------------------------------------------------- route --
+  route:
+    name: route
+    if: |
+      github.event.issue.pull_request == null
+      && github.event.comment.author_association != 'NONE'
+      && (github.event_name == 'issue_comment'
+          || startsWith(github.event.issue.title, '/agent'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    outputs:
+      needs_model: ${{ steps.parse.outputs.needs_model }}
+      verb: ${{ steps.parse.outputs.verb }}
+      comment_id: ${{ steps.parse.outputs.comment_id }}
+      issue_number: ${{ steps.parse.outputs.issue_number }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Author gate, grammar, argument validation, idempotency — in that order,
+      # and the idempotency row is committed BEFORE anything acts.
+      - name: Parse, record, answer lookups
+        id: parse
+        run: node scripts/route-step.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # One mapping, two event shapes. Keyed on the event name rather than
+          # on truthiness, so an empty comment body can never fall through and
+          # be replaced by the issue body.
+          COMMENT_BODY: ${{ github.event_name == 'issues' && github.event.issue.body || github.event.comment.body }}
+          COMMENT_ID: ${{ github.event_name == 'issues' && format('issue:{0}', github.event.issue.number) || github.event.comment.id }}
+          COMMENT_AUTHOR: ${{ github.event_name == 'issues' && github.event.issue.user.login || github.event.comment.user.login }}
+          COMMENT_ASSOCIATION: ${{ github.event_name == 'issues' && github.event.issue.author_association || github.event.comment.author_association }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
+          SANDBOX_ENABLED: ${{ vars.SANDBOX_ENABLED || 'false' }}
+
+      - name: Upload context for the model job
+        if: ${{ steps.parse.outputs.needs_model == 'true' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: ask-context
+          path: .run/ask-context.json
+          retention-days: 1
+          if-no-files-found: error
+
+      - name: Commit the intent row
+        run: |
+          set -euo pipefail
+          git config user.name  "git-agent[bot]"
+          git config user.email "git-agent[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then exit 0; fi
+          git add -A
+          git commit -m "ask: recorded /agent ${{ steps.parse.outputs.verb }}"
+          git push
+
+  # --------------------------------------------------------------- explain --
+  explain:
+    name: explain
+    needs: route
+    if: ${{ needs.route.outputs.needs_model == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download context
+        uses: actions/download-artifact@v4
+        with:
+          name: ask-context
+          path: .run
+
+      # Holds the key. Holds no write token — that is the whole point.
+      - name: Answer
+        run: node scripts/explain-step.mjs
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_TOKEN_BUDGET: ${{ vars.LLM_TOKEN_BUDGET }}
+          AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
+
+      - name: Upload answer
+        uses: actions/upload-artifact@v4
+        with:
+          name: ask-answer
+          path: .run/answer.md
+          retention-days: 1
+          if-no-files-found: error
+
+  # ----------------------------------------------------------------- reply --
+  reply:
+    name: reply
+    needs: [route, explain]
+    if: ${{ always() && needs.route.outputs.needs_model == 'true' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download context
+        uses: actions/download-artifact@v4
+        with:
+          name: ask-context
+          path: .run
+
+      - name: Download answer
+        if: ${{ needs.explain.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: ask-answer
+          path: .run
+
+      # The gate runs here, in the job with no key — same reasoning as the
+      # digest: an ungrounded answer is rejected before it becomes a comment.
+      - name: Gate and reply
+        run: node scripts/reply-step.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_ID: ${{ needs.route.outputs.comment_id }}
+          ISSUE_NUMBER: ${{ needs.route.outputs.issue_number }}
+          EXPLAIN_RESULT: ${{ needs.explain.result }}
+
+      - name: Commit the outcome row
+        run: |
+          set -euo pipefail
+          git config user.name  "git-agent[bot]"
+          git config user.email "git-agent[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then exit 0; fi
+          git add -A
+          git commit -m "ask: answered /agent ${{ needs.route.outputs.verb }}"
+          git push

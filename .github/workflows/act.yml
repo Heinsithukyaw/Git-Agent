@@ -1,0 +1,129 @@
+name: act
+
+# The only workflow that may open a pull request.
+#
+# Split from `ask.yml` deliberately: `ask` answers lookups and can never change
+# the user's code. `act` requires an explicit verb — `bump` or `verify` — and it
+# is never reachable from the cron. Reporting goes to `main`; execution goes to
+# an `agent/*` branch and then a pull request, so a bad bump is one closed PR
+# rather than a commit in the middle of an append-only history.
+#
+# No secrets anywhere in this workflow. It writes, so it must not hold a key.
+
+on:
+  issue_comment:
+    types: [created]
+  # Same second shape as `ask`: a freshly opened issue whose title begins with
+  # `/agent` is a command. It matters more here than there, because this is the
+  # workflow that can open a pull request — which is why the author gate still
+  # runs first, inside the job, before anything is computed or written.
+  issues:
+    types: [opened]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-agent-act-${{ github.event_name == 'issues' && github.event.issue.number || github.event.comment.id }}
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------ plan --
+  plan:
+    name: plan
+    if: |
+      github.event.issue.pull_request == null
+      && (github.event_name == 'issue_comment'
+          || startsWith(github.event.issue.title, '/agent'))
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+    outputs:
+      verb: ${{ steps.plan.outputs.verb }}
+      package: ${{ steps.plan.outputs.package }}
+      version: ${{ steps.plan.outputs.version }}
+      branch: ${{ steps.plan.outputs.branch }}
+      patch_b64: ${{ steps.plan.outputs.patch_b64 }}
+      command_b64: ${{ steps.plan.outputs.command_b64 }}
+      sandbox: ${{ steps.plan.outputs.sandbox }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      # Author gate and grammar first. A stranger commenting `/agent bump ...`
+      # fails here, in a job that holds no key and has not written anything.
+      - name: Validate and compute the change
+        id: plan
+        run: node scripts/act-step.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          COMMENT_BODY: ${{ github.event_name == 'issues' && github.event.issue.body || github.event.comment.body }}
+          COMMENT_ID: ${{ github.event_name == 'issues' && format('issue:{0}', github.event.issue.number) || github.event.comment.id }}
+          COMMENT_AUTHOR: ${{ github.event_name == 'issues' && github.event.issue.user.login || github.event.comment.user.login }}
+          COMMENT_ASSOCIATION: ${{ github.event_name == 'issues' && github.event.issue.author_association || github.event.comment.author_association }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SANDBOX_ENABLED: ${{ vars.SANDBOX_ENABLED || 'false' }}
+
+      - name: Commit the intent row
+        run: |
+          set -euo pipefail
+          git config user.name  "git-agent[bot]"
+          git config user.email "git-agent[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then exit 0; fi
+          git add -A
+          git commit -m "act: recorded /agent ${{ steps.plan.outputs.verb }} ${{ steps.plan.outputs.package }}"
+          git push
+
+  # --------------------------------------------------------------- sandbox --
+  sandbox:
+    name: sandbox
+    needs: plan
+    if: ${{ needs.plan.outputs.verb != '' && needs.plan.outputs.sandbox == 'true' }}
+    # Shape B: a fixed pipeline — apply, run, report. The loop stays in the
+    # job that owns the decision; this job only executes and answers.
+    uses: ./.github/workflows/sandbox.yml
+    with:
+      patch_b64: ${{ needs.plan.outputs.patch_b64 }}
+      command_b64: ${{ needs.plan.outputs.command_b64 }}
+      network: none
+
+  # -------------------------------------------------------------------- pr --
+  pull-request:
+    name: pull-request
+    needs: [plan, sandbox]
+    if: ${{ always() && needs.plan.outputs.verb != '' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+      pull-requests: write
+      issues: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Open the pull request
+        run: node scripts/pr-step.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          VERB: ${{ needs.plan.outputs.verb }}
+          PACKAGE: ${{ needs.plan.outputs.package }}
+          VERSION: ${{ needs.plan.outputs.version }}
+          BRANCH: ${{ needs.plan.outputs.branch }}
+          COMMENT_ID: ${{ github.event_name == 'issues' && format('issue:{0}', github.event.issue.number) || github.event.comment.id }}
+          ISSUE_NUMBER: ${{ github.event.issue.number }}
+          SANDBOX_RESULT: ${{ needs.sandbox.result }}
+          SANDBOX_EXIT: ${{ needs.sandbox.outputs.exit_code }}
+          SANDBOX_LOG: ${{ needs.sandbox.outputs.log_tail }}

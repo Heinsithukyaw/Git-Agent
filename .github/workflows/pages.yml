@@ -1,0 +1,65 @@
+name: pages
+
+# Publishes site/ — the digest view and the chat composer.
+#
+# Triggered by the digest run completing, not by push, so the site is published
+# once per digest rather than once per commit. GitHub never renders an .html file
+# from a repository blob: the blob shows source and raw.githubusercontent serves
+# text/plain, so Pages is the only supported route to a rendered page.
+#
+# Opt-in in practice: if Pages is not enabled on the repository this workflow
+# fails loudly on the deploy step and nothing else is affected.
+
+on:
+  workflow_run:
+    workflows: [digest]
+    types: [completed]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-agent-pages
+  cancel-in-progress: false
+
+jobs:
+  build:
+    name: build
+    if: ${{ github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion != 'failure' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Render
+        run: node scripts/render-site.mjs
+
+      - name: Upload
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: site
+
+  deploy:
+    name: deploy
+    needs: build
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - name: Deploy
+        id: deploy
+        uses: actions/deploy-pages@v4

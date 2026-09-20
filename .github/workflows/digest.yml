@@ -1,0 +1,237 @@
+name: digest
+
+# One file, four jobs. Not one job with four steps.
+#
+# The split is along the privilege boundary, not the logical one (I1):
+#
+#   fetch      contents: read   no secrets     reads the world
+#   narrate    contents: read   holds the key  writes prose to an artifact
+#   commit     contents: write  NO KEY         runs the containment gate, commits
+#   heartbeat  contents: write  NO KEY         runs only when fetch fails, so the
+#                                              liveness signal still moves
+#
+# The gate landed in the job with no key on purpose. The thing that decides what
+# gets written is the thing that cannot be hijacked, because it never talks to a
+# model. A gate sharing a job with the model is a gate the model's input can
+# influence.
+#
+# `heartbeat` is not a fifth stage of the pipeline; it is the branch taken when
+# the pipeline produced nothing. It exists because a repository whose scheduled
+# workflow commits nothing for 60 days has its schedule disabled — so a run that
+# fails has to leave a mark, or the failure becomes permanent and silent.
+#
+# The cost is one artifact round-trip per run, measured in seconds. The benefit
+# is that a successful prompt injection drops from "arbitrary commit" to "a false
+# sentence in an artifact the gate then rejects".
+
+on:
+  schedule:
+    # Deliberately not on the hour: GitHub delays scheduled runs under load, and
+    # the top of every hour is the documented peak.
+    - cron: '17 6 * * *'
+  workflow_dispatch:
+    inputs:
+      probe_endpoint:
+        description: Probe the configured endpoint and record its capabilities
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+concurrency:
+  group: git-agent-digest
+  cancel-in-progress: false
+
+jobs:
+  # ------------------------------------------------------------------ read --
+  fetch:
+    name: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Gather
+        run: node scripts/fetch-step.mjs
+        env:
+          # The platform token, not a credential the user configured. Its scope
+          # is exactly this job's permissions, which is why it is not a secret
+          # for the purposes of I1.
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Upload payload
+        uses: actions/upload-artifact@v4
+        with:
+          name: payload
+          path: .run/payload.json
+          retention-days: 1
+          if-no-files-found: error
+
+  # ------------------------------------------------------------- narrate --
+  narrate:
+    name: narrate
+    needs: fetch
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    # A narration failure degrades the run to the deterministic digest. It must
+    # not stop it: the rules-only path is a complete product.
+    continue-on-error: true
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: .run
+
+      - name: Narrate
+        run: node scripts/narrate-step.mjs
+        env:
+          LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
+          LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
+          LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_TOKEN_BUDGET: ${{ vars.LLM_TOKEN_BUDGET }}
+          JEV_ENABLED: ${{ vars.JEV_ENABLED }}
+          JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
+          JEV_BASE_URL: ${{ vars.JEV_BASE_URL }}
+          AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
+          PROBE_ENDPOINT: ${{ github.event.inputs.probe_endpoint || 'false' }}
+
+      - name: Upload prose
+        uses: actions/upload-artifact@v4
+        with:
+          name: prose
+          path: .run/prose.md
+          retention-days: 1
+          if-no-files-found: ignore
+
+  # -------------------------------------------------------------- commit --
+  commit:
+    name: commit
+    needs: [fetch, narrate]
+    if: ${{ !cancelled() && needs.fetch.result == 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Download payload
+        uses: actions/download-artifact@v4
+        with:
+          name: payload
+          path: .run
+
+      - name: Download prose
+        if: ${{ needs.narrate.result == 'success' }}
+        uses: actions/download-artifact@v4
+        with:
+          name: prose
+          path: .run
+
+      # The containment gate runs here, in the job that holds no model key.
+      - name: Gate and write
+        run: node scripts/commit-step.mjs
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          NARRATE_RESULT: ${{ needs.narrate.result }}
+
+      # Bounded writes, enforced a second time against the actual working tree.
+      - name: Assert nothing unexpected is dirty
+        run: |
+          set -euo pipefail
+          node tools/check-invariants.mjs --dirty
+          node tools/check-invariants.mjs --allowlist
+
+      - name: Commit
+        run: |
+          set -euo pipefail
+          git config user.name  "git-agent[bot]"
+          git config user.email "git-agent[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git add -A
+          git commit -m "digest: $(node -e "console.log(require('./data/heartbeat.json').last_status || 'run')") $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
+
+  # ----------------------------------------------------------- heartbeat --
+  #
+  # A failed fetch skips the commit job above — correctly, since there is no
+  # payload to render. But then the heartbeat does not move either, and a
+  # scheduled workflow that commits nothing for 60 days has its schedule
+  # disabled by GitHub: the failure becomes permanent, and silently.
+  #
+  # This job exists only for that case. It holds `contents: write` and no secret,
+  # like every other writing job (I1), and it writes only the heartbeat and the
+  # run log, both inside the collector allowlist (I3).
+  heartbeat:
+    name: heartbeat
+    needs: [fetch, narrate]
+    if: ${{ always() && needs.fetch.result != 'success' }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+
+      - name: Record the failure
+        run: node scripts/heartbeat-step.mjs
+        env:
+          GITHUB_RUN_ID: ${{ github.run_id }}
+          GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
+          HEARTBEAT_STATUS: failed
+          HEARTBEAT_REASON: "The fetch job did not produce a payload (result: ${{ needs.fetch.result }})."
+
+      - name: Assert nothing unexpected is dirty
+        run: |
+          set -euo pipefail
+          node tools/check-invariants.mjs --dirty
+
+      - name: Commit the liveness signal
+        run: |
+          set -euo pipefail
+          git config user.name  "git-agent[bot]"
+          git config user.email "git-agent[bot]@users.noreply.github.com"
+          if [ -z "$(git status --porcelain)" ]; then
+            echo "nothing to commit"
+            exit 0
+          fi
+          git add -A
+          git commit -m "heartbeat: failed run $(date -u +%Y-%m-%dT%H:%MZ)"
+          git push
