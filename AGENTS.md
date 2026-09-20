@@ -214,6 +214,18 @@ escalate; none of them resolves to a decision.
   `compose()` escalates on the absent answer with a reason that names the gap
   rather than blaming the endpoint. Measured against the live service, not
   theorised.
+- **Absent data is not a negative verdict.** `inAnyRange(pinned, [])` returns
+  `false`, so an advisory whose range list is empty fell through to `clear` —
+  "pinned version is outside the affected range" — which is a claim about a range
+  that was never received. The vacuous truth of an empty set is precisely the
+  shape of a silent false negative: the digest reads as a clean bill of health.
+  Zero evaluable ranges is `uncertain`; so is a set the evaluable ranges miss
+  while part of it stays unchecked, because an unevaluable range cannot un-affect
+  us. The same rule covers the range *type*: `SEMVER` and `ECOSYSTEM` are both
+  version ranges, and a filter that accepts one and rejects the other marks a
+  whole ecosystem unevaluable while looking like diligence. Measured on the live
+  stack, the shipped filter reported **11 clear, 0 to act on** for eleven
+  advisories that all affected the pinned version and all had a fix published.
 - **The request body is asserted, not assumed.** `tests/triage.test.mjs` pins
   `{model, questions, state}`, with `model` a **string** and `selectedModels`
   absent. A stubbed *response* cannot catch a wrong *request*: the stub is wrong

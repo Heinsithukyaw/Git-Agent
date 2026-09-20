@@ -16,6 +16,10 @@
  *   4. **A question with no premise is not asked.** The band catches a model
  *      that cannot tell; it cannot catch a question about an empty list, whose
  *      confident `no` would silently clear a real advisory.
+ *   5. **A range is evaluated, not filtered away.** SEMVER and ECOSYSTEM are both
+ *      version ranges, and OSV publishes SEMVER for npm. A filter that accepts
+ *      one and rejects the other silently marks an ecosystem unevaluable — and an
+ *      empty range list is not "outside the range", it is "we were not told".
  */
 
 import { test } from 'node:test';
@@ -98,9 +102,43 @@ test('a range we cannot evaluate is uncertain, never clear', () => {
   assert.match(r.reason, /version arithmetic cannot evaluate/);
 });
 
-test('an advisory with no ranges at all is treated as not affected', () => {
+test('an advisory with no ranges at all is uncertain, never clear', () => {
+  // This test used to assert the opposite — CLEAR, under the name "no ranges at
+  // all is treated as not affected" — and that assertion *was* the defect. An
+  // empty set is vacuously satisfied by "outside every one of them", so this
+  // path reported a live advisory as clear. It is how a source that returned no
+  // range data at all produced a digest reading "0 to act on" for a stack with
+  // eleven affected advisories. Absence of evidence is not evidence of absence.
   const r = rulesDecide(advisory({ affected: [] }), pkg());
-  assert.equal(r.decision, DECISIONS.CLEAR);
+  assert.equal(r.decision, DECISIONS.UNCERTAIN);
+  assert.match(r.reason, /no affected range was published/);
+});
+
+test('a SEMVER range is evaluated, not dismissed as unevaluable', () => {
+  // OSV publishes SEMVER for npm and ECOSYSTEM for PyPI. Every fixture in this
+  // file used ECOSYSTEM — the type the filter happened to accept — so the
+  // rejected-but-valid branch was never exercised, and every npm advisory was
+  // marked "cannot evaluate" in production while this suite stayed green.
+  const r = rulesDecide(advisory({ affected: [{ type: 'SEMVER', introduced: '0', fixed: '4.17.21' }] }), pkg());
+  assert.equal(r.decision, DECISIONS.ACT, 'SEMVER is a version range and must be evaluated');
+  assert.equal(r.evidence.ranges, 1);
+  assert.equal(r.evidence.unevaluable_ranges, 0);
+});
+
+test('an unevaluable range cannot clear an advisory the evaluable ones miss', () => {
+  // We can prove we are affected; we cannot prove we are not, while part of the
+  // range set is unchecked. An unevaluable range cannot un-affect us.
+  const r = rulesDecide(
+    advisory({
+      affected: [
+        { type: 'SEMVER', introduced: '5.0.0', fixed: '5.1.0' },
+        { type: 'GIT', introduced: '0', fixed: '9f2c1a4' },
+      ],
+    }),
+    pkg(),
+  );
+  assert.equal(r.decision, DECISIONS.UNCERTAIN);
+  assert.match(r.reason, /cannot be checked/);
 });
 
 /* ------------------------------------------------------------- severity --- */
