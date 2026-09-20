@@ -60,6 +60,57 @@ and that is enforced by GitHub, not by discipline.
 
 ---
 
+## Where it runs: three repositories, not one
+
+This template is public. **Your instance should not be.** They are different
+repositories, and the split is the whole security story.
+
+| Repository | Visibility | Holds | Runs |
+|---|---|---|---|
+| **Template** — this one | public | no secrets; the seed `data/stack.json` | a live demo digest, daily |
+| **Your instance** | private | your real stack, your key | your digest, daily |
+| **Status** — optional | public | a subset you marked publishable | a second, redacted digest |
+
+**The public template holds no secrets and runs against the seed stack as a live
+demo.** That is deliberate, and it is the point: the repository anyone can read is
+the one with nothing to steal. It watches a handful of widely-used packages and
+one public feed, and publishes the result. You can watch it work; you cannot
+learn anything private from it.
+
+**Your instance is a separate private repository**, created with **Use this
+template** — not a fork. This matters: *you cannot fork a public repository into
+a private one.* A fork of this repository is public, inherits its visibility, and
+is permanently linked to it. "Use this template" makes a copy with its own
+history, its own settings, and its own secrets. Set `LLM_API_KEY` there and
+nowhere else.
+
+**An optional third repository** holds the part of your digest you are willing to
+publish — the same pipeline, a narrower watch list, a renderer that drops
+anything not explicitly marked public. Build it only if you want a public status
+page. It is not a way to make a private instance public; it is a second instance
+with a smaller watch list.
+
+What the split buys you:
+
+- **A mistake in the template costs nothing.** Its history is public, so a leak
+  there is visible immediately and has nothing to leak.
+- **Your instance stays yours.** Its commits are private, so its digest, its
+  watch list and its corrections stay private.
+- **Neither can reach the other.** They share no history, no secrets and no
+  settings.
+
+The thing to be careful with is not the code — it is `data/stack.json`. That file
+is your dependency inventory, and it is the only genuinely sensitive thing the
+agent stores. It belongs in the private instance.
+
+### If you would rather run only one repository
+
+Instantiate the template privately and skip the demo. The template is then just
+the thing you read. Nothing breaks: no workflow here depends on this repository
+existing.
+
+---
+
 ## What it does every run
 
 Three jobs on the normal path, split along the privilege boundary rather than the
@@ -131,7 +182,7 @@ long as a job takes to start, which is a minute, not a second.
 ## Layout
 
 ```
-.github/workflows/   digest (3 jobs) · ask (3 jobs) · act · sandbox · pages · ci
+.github/workflows/   digest (4 jobs) · ask (3 jobs) · act · sandbox · pages · ci
 lib/                 llm · probe · commands · sandbox · triage
                      plus internals: store · version · gate · sources · render · invariants
 scripts/             one entry point per job
@@ -140,6 +191,8 @@ history/             append-only: events · commands · runs (hash-chained)
 digest/              dated archive
 site/                index.html (digest view) · chat.html (composer)
 tools/               the invariant checks, as a CLI
+AGENTS.md            the rules — every one of them enforced by a check
+SECURITY.md          what is in scope for a report, and what is not
 README.md            regenerated between markers
 ```
 
@@ -176,6 +229,12 @@ rule at all. The short version:
   content, not a fact about the world.
 - **The sandbox never receives a secret**, and ships off by default.
 - **No provider names in the code.** The agent has no opinion about your endpoint.
+- **Commands are parsed, never interpreted.** An allowlisted verb, an argument that must
+  appear in the watch list, and an author gate that exits rather than warns. The cheap
+  workflow-level guard names exactly the same three associations as the real gate, so it
+  can never drift looser than the gate it fronts.
+- **Third-party actions are pinned to a commit, not a tag.** A tag is a mutable pointer,
+  and whoever can move it controls code running with your write token.
 - **Honest about time.** A digest is stamped with the observation time, never with the
   schedule. "As of 06:12 UTC" is honest; "today's briefing" is a small lie that will
   eventually be caught.

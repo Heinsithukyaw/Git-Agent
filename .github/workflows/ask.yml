@@ -23,11 +23,14 @@ on:
   # The composer cannot prefill a comment body — GitHub has no URL parameter for
   # it — so it opens a prefilled *issue* instead. An opened issue is therefore a
   # second shape of the same command, and it is admitted only when its title
-  # begins with `/agent`. A title prefix rather than a label, deliberately: a
-  # label has to exist for the guard to pass, and a guard that silently never
-  # fires is worse than no guard. Everything downstream is unchanged — the
-  # author gate, the grammar and the argument validator do not care which event
-  # delivered the text.
+  # begins with `/agent` **and a space** — the shape both the composer and the
+  # issue template emit. The delimiter is load-bearing: `startsWith(title,
+  # '/agent')` also matches a title of `/agentfoo`, and a pre-filter that admits
+  # things it does not mean is how pre-filters rot. A title prefix rather than a
+  # label, deliberately: a label has to exist for the guard to pass, and a guard
+  # that silently never fires is worse than no guard. Everything downstream is
+  # unchanged — the author gate, the grammar and the argument validator do not
+  # care which event delivered the text.
   issues:
     types: [opened]
 
@@ -42,11 +45,28 @@ jobs:
   # ----------------------------------------------------------------- route --
   route:
     name: route
+    # The cheap guard, before a runner starts. It is a pre-filter and never the
+    # gate: `scripts/route-step.mjs` still exits on the same allowlist, because
+    # this expression is a filter on an event and the script is a check on a
+    # value. I13 asserts the two name the same three associations, so this can
+    # never drift looser than the gate it fronts.
+    #
+    # Both branches read their own association, and that is the whole point.
+    # `github.event.comment` is null on an `issues` event, and a null comparison
+    # is not a rejection — `null != 'NONE'` is true. Written as a single
+    # condition, a stranger's `/agent`-titled issue satisfied the author test by
+    # accident and started a runner that then did nothing. Nothing was
+    # compromised, but a guard that passes for the wrong reason is a guard that
+    # will pass for the wrong reason when it matters.
     if: |
       github.event.issue.pull_request == null
-      && github.event.comment.author_association != 'NONE'
-      && (github.event_name == 'issue_comment'
-          || startsWith(github.event.issue.title, '/agent'))
+      && (
+        (github.event_name == 'issue_comment'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        || (github.event_name == 'issues'
+          && startsWith(github.event.issue.title, '/agent ')
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -59,10 +79,10 @@ jobs:
       issue_number: ${{ steps.parse.outputs.issue_number }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
@@ -86,7 +106,7 @@ jobs:
 
       - name: Upload context for the model job
         if: ${{ steps.parse.outputs.needs_model == 'true' }}
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ask-context
           path: .run/ask-context.json
@@ -114,15 +134,15 @@ jobs:
       contents: read
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
       - name: Download context
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ask-context
           path: .run
@@ -138,7 +158,7 @@ jobs:
           AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
 
       - name: Upload answer
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
           name: ask-answer
           path: .run/answer.md
@@ -157,22 +177,22 @@ jobs:
       issues: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
       - name: Download context
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ask-context
           path: .run
 
       - name: Download answer
         if: ${{ needs.explain.result == 'success' }}
-        uses: actions/download-artifact@v4
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
           name: ask-answer
           path: .run

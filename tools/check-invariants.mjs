@@ -160,6 +160,8 @@ function report(result) {
 
 function summaryOf(check) {
   if (check.rows !== undefined) return `${check.rows} row(s), chain intact`;
+  if (check.pins !== undefined) return `${check.pins.length} action(s) pinned to a commit`;
+  if (check.allowed !== undefined) return `allowlist ${check.allowed.join(' / ')}`;
   return 'holds';
 }
 

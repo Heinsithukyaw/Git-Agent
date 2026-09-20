@@ -1,0 +1,23 @@
+# Review requirements.
+#
+# The paths below are the ones where a quiet change is worse than a loud one:
+# the workflows (privilege), the gate (I2), the invariants (every rule) and the
+# writer (I3). Requiring a review here is the cheap half of the protection; the
+# checks in ci.yml are the other half.
+#
+# Using this as a template? Change the owner to your own handle or team. A
+# CODEOWNERS file pointing at a stranger means your own pull requests wait on
+# someone who is not coming.
+
+*                                   @Heinsithukyaw
+
+# Privilege, secrets, and the checks themselves. A change to any of these can
+# make an invariant stop being enforced without making a single test fail.
+/.github/                           @Heinsithukyaw
+/lib/gate.mjs                       @Heinsithukyaw
+/lib/invariants.mjs                 @Heinsithukyaw
+/lib/store.mjs                      @Heinsithukyaw
+/lib/commands.mjs                   @Heinsithukyaw
+/tools/                             @Heinsithukyaw
+/AGENTS.md                          @Heinsithukyaw
+/SECURITY.md                        @Heinsithukyaw

@@ -25,6 +25,8 @@ import {
   checkHeartbeatExempt,
   checkHashChain,
   checkPagesHoldNoKey,
+  checkActionsPinned,
+  checkAuthorGateMirrorsScript,
   runAll,
 } from '../lib/invariants.mjs';
 import { CI_ALLOWLIST } from '../lib/store.mjs';
@@ -248,6 +250,243 @@ test('an empty diff is fine', () => {
 
 test('exactly one file is outside the change gate', () => {
   assert.equal(checkHeartbeatExempt(ROOT).ok, true);
+});
+
+/* ------------------------------------------------------ I12 action pins --- */
+
+const SHA = '11d5960a326750d5838078e36cf38b85af677262';
+
+test('an action referenced by tag is a violation, and the ref is named', () => {
+  const root = syntheticRoot({
+    '.github/workflows/float.yml': [
+      'name: float',
+      'jobs:',
+      '  a:',
+      '    steps:',
+      '      - uses: actions/checkout@v4',
+    ].join('\n'),
+  });
+  const result = checkActionsPinned(root);
+  assert.equal(result.ok, false);
+  assert.equal(result.violations[0].ref, 'actions/checkout@v4');
+  assert.match(result.violations[0].rule, /I12/);
+});
+
+test('a branch ref is a violation too — main is as mutable as v4', () => {
+  const root = syntheticRoot({
+    '.github/workflows/branch.yml': 'name: b\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@main\n',
+  });
+  assert.equal(checkActionsPinned(root).ok, false);
+});
+
+test('a short SHA is not a pin', () => {
+  const root = syntheticRoot({
+    '.github/workflows/short.yml': 'name: s\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@11d5960\n',
+  });
+  assert.equal(checkActionsPinned(root).ok, false, 'a prefix can still be ambiguous; require all 40 hex');
+});
+
+test('a commit pin is accepted, and the pin is reported', () => {
+  const root = syntheticRoot({
+    '.github/workflows/pinned.yml': `name: p\njobs:\n  a:\n    steps:\n      - uses: actions/checkout@${SHA} # v4.4.0\n`,
+  });
+  const result = checkActionsPinned(root);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.pins, [`actions/checkout@${SHA}`]);
+});
+
+test('a local reusable workflow is this repository, not a third party', () => {
+  const root = syntheticRoot({
+    '.github/workflows/caller.yml': 'name: c\njobs:\n  a:\n    uses: ./.github/workflows/sandbox.yml\n',
+  });
+  const result = checkActionsPinned(root);
+  assert.equal(result.ok, true);
+  assert.deepEqual(result.pins, [], 'a local workflow is not a pin and should not be counted as one');
+});
+
+test('a container action must be pinned by digest', () => {
+  const byTag = syntheticRoot({
+    '.github/workflows/docker.yml': 'name: d\njobs:\n  a:\n    steps:\n      - uses: docker://alpine:3.20\n',
+  });
+  assert.equal(checkActionsPinned(byTag).ok, false);
+
+  const digest = 'a'.repeat(64);
+  const byDigest = syntheticRoot({
+    '.github/workflows/docker.yml': `name: d\njobs:\n  a:\n    steps:\n      - uses: docker://alpine@sha256:${digest}\n`,
+  });
+  assert.equal(checkActionsPinned(byDigest).ok, true);
+});
+
+test('the repository pins every action it uses', () => {
+  const result = checkActionsPinned(ROOT);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.ok(result.pins.length >= 6, `expected at least six distinct actions, saw ${result.pins.length}`);
+  for (const pin of result.pins) assert.match(pin, /@[0-9a-f]{40}$/);
+});
+
+/* ---------------------------------------------- I13 author gate mirrors --- */
+
+function guardedWorkflow(allowlist) {
+  return [
+    'name: ask',
+    'on:',
+    '  issue_comment:',
+    '    types: [created]',
+    '  issues:',
+    '    types: [opened]',
+    'jobs:',
+    '  route:',
+    '    if: |',
+    '      github.event.issue.pull_request == null',
+    `      && contains(fromJSON('${JSON.stringify(allowlist)}'), github.event.comment.author_association)`,
+    "      && startsWith(github.event.issue.title, '/agent ')",
+    '    steps:',
+    '      - run: node scripts/route-step.mjs',
+  ].join('\n');
+}
+
+const SCRIPT = "export const ALLOWED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER', 'COLLABORATOR']);\n";
+
+test('an issue_comment workflow with no author guard is a violation', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/unguarded.yml': [
+      'name: unguarded',
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  route:',
+      '    steps:',
+      '      - run: node scripts/route-step.mjs',
+    ].join('\n'),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].rule, /I13/);
+});
+
+test('the regression that prompted this check — a null comparison — is caught', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/loose.yml': [
+      'name: loose',
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  route:',
+      "    if: github.event.comment.author_association != 'NONE'",
+      '    steps:',
+      '      - run: node scripts/route-step.mjs',
+    ].join('\n'),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, false, "!= 'NONE' is looser than the gate it fronts");
+});
+
+test('a guard naming exactly the script allowlist is accepted', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/guarded.yml': guardedWorkflow(['OWNER', 'MEMBER', 'COLLABORATOR']),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.deepEqual(result.allowed, ['OWNER', 'MEMBER', 'COLLABORATOR']);
+});
+
+test('the allowlist is read from the script, not assumed', () => {
+  const twoOnly = "export const ALLOWED_ASSOCIATIONS = new Set(['OWNER', 'MEMBER']);\n";
+
+  const matches = syntheticRoot({
+    'lib/commands.mjs': twoOnly,
+    '.github/workflows/guarded.yml': guardedWorkflow(['OWNER', 'MEMBER']),
+  });
+  assert.equal(checkAuthorGateMirrorsScript(matches).ok, true, 'the workflow names the same two');
+
+  const drifted = syntheticRoot({
+    'lib/commands.mjs': twoOnly,
+    '.github/workflows/guarded.yml': guardedWorkflow(['OWNER', 'MEMBER', 'COLLABORATOR']),
+  });
+  assert.equal(
+    checkAuthorGateMirrorsScript(drifted).ok,
+    false,
+    'a workflow guard wider than the script gate is exactly the drift this check exists for',
+  );
+});
+
+test('the title prefix must carry its delimiter, so /agentfoo is not admitted', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/no-delimiter.yml': [
+      'name: no-delimiter',
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  route:',
+      `    if: contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`,
+      "      && startsWith(github.event.issue.title, '/agent')",
+      '    steps:',
+      '      - run: node scripts/route-step.mjs',
+    ].join('\n'),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, false, "startsWith '/agent' also matches a title of '/agentfoo'");
+  assert.match(result.violations[0].rule, /delimiter/);
+});
+
+test('an opened issue is admitted only by the /agent title prefix', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/no-prefix.yml': [
+      'name: no-prefix',
+      'on:',
+      '  issue_comment:',
+      '    types: [created]',
+      'jobs:',
+      '  route:',
+      `    if: contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association)`,
+      '    steps:',
+      '      - run: node scripts/route-step.mjs',
+    ].join('\n'),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].rule, /title prefix/);
+});
+
+test('a workflow that does not run on issue_comment needs no guard', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': SCRIPT,
+    '.github/workflows/scheduled.yml': [
+      'name: scheduled',
+      'on:',
+      '  schedule:',
+      "    - cron: '17 6 * * *'",
+      'jobs:',
+      '  fetch:',
+      '    steps:',
+      '      - run: node scripts/fetch-step.mjs',
+    ].join('\n'),
+  });
+  assert.equal(checkAuthorGateMirrorsScript(root).ok, true);
+});
+
+test('a script with no declared allowlist fails loudly rather than passing', () => {
+  const root = syntheticRoot({
+    'lib/commands.mjs': 'export const SOMETHING_ELSE = 1;\n',
+    '.github/workflows/guarded.yml': guardedWorkflow(['OWNER', 'MEMBER', 'COLLABORATOR']),
+  });
+  const result = checkAuthorGateMirrorsScript(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].error, /ALLOWED_ASSOCIATIONS not found/);
+});
+
+test('the repository guards every issue_comment workflow with the script allowlist', () => {
+  const result = checkAuthorGateMirrorsScript(ROOT);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.deepEqual(result.allowed, ['OWNER', 'MEMBER', 'COLLABORATOR']);
 });
 
 /* ---------------------------------------------------------- the real repo --- */

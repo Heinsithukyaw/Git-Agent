@@ -14,9 +14,10 @@ on:
   issue_comment:
     types: [created]
   # Same second shape as `ask`: a freshly opened issue whose title begins with
-  # `/agent` is a command. It matters more here than there, because this is the
-  # workflow that can open a pull request — which is why the author gate still
-  # runs first, inside the job, before anything is computed or written.
+  # `/agent ` — prefix and space, the shape the composer and the template emit —
+  # is a command. It matters more here than there, because this is the workflow
+  # that can open a pull request — which is why the author gate still runs first,
+  # inside the job, before anything is computed or written.
   issues:
     types: [opened]
 
@@ -31,10 +32,23 @@ jobs:
   # ------------------------------------------------------------------ plan --
   plan:
     name: plan
+    # Same shape as `ask.yml`, and it matters more here: this is the workflow
+    # that can open a pull request. The guard is a pre-filter over an event; the
+    # real gate is the author check inside `scripts/act-step.mjs`, which still
+    # exits. I13 asserts both name the same allowlist.
+    #
+    # The association is read per event on purpose — `github.event.comment` is
+    # null on an `issues` event, and `null != 'NONE'` is true, so a single
+    # condition would admit a stranger's issue by accident.
     if: |
       github.event.issue.pull_request == null
-      && (github.event_name == 'issue_comment'
-          || startsWith(github.event.issue.title, '/agent'))
+      && (
+        (github.event_name == 'issue_comment'
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.comment.author_association))
+        || (github.event_name == 'issues'
+          && startsWith(github.event.issue.title, '/agent ')
+          && contains(fromJSON('["OWNER","MEMBER","COLLABORATOR"]'), github.event.issue.author_association))
+      )
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -50,10 +64,10 @@ jobs:
       sandbox: ${{ steps.plan.outputs.sandbox }}
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
@@ -107,10 +121,10 @@ jobs:
       issues: write
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4.4.0
 
       - name: Setup Node
-        uses: actions/setup-node@v4
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
 
