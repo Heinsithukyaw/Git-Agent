@@ -17,6 +17,7 @@ import assert from 'node:assert/strict';
 import {
   NotConfiguredError,
   BudgetExceededError,
+  EmptyAnswerError,
   config,
   isConfigured,
   complete,
@@ -84,7 +85,9 @@ test('the request is the one an OpenAI-compatible endpoint documents', async () 
   assert.deepEqual(Object.keys(seen[0].body).sort(), ['max_tokens', 'messages', 'model', 'stream', 'temperature']);
   assert.equal(seen[0].body.model, 'a-model');
   assert.equal(seen[0].body.stream, false, 'the pipeline reads one response, not a stream');
-  assert.equal(seen[0].body.max_tokens, 1200);
+  // The *value* is owned by the reasoning-model test below, so it is asserted in
+  // one place rather than two. Here the shape is what matters.
+  assert.equal(typeof seen[0].body.max_tokens, 'number');
   assert.equal(seen[0].init.headers.authorization, `Bearer ${ENV.LLM_API_KEY}`);
 });
 
@@ -167,6 +170,76 @@ test('the client identity is transport, not a credential', () => {
   );
 });
 
+/* ------------------------------------------------------- the empty answer --- */
+
+test('a 200 with no text is a failure, not a success', async () => {
+  // Found live, not reasoned about. A reasoning model spent the whole
+  // `max_tokens` ceiling on its reasoning and returned
+  // `finish_reason: "max_tokens"` with `content: ""` and a 200 status.
+  // `complete()` returned `text: ''` happily, `narrate-step` recorded
+  // `ok: true`, the gate had nothing to check, and the digest showed no gap —
+  // so a configured-and-broken narration read exactly like a keyless instance.
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ok({ choices: [{ message: { content: '' }, finish_reason: 'length' }] });
+  try {
+    await assert.rejects(
+      complete({ messages: [], env: ENV, retries: 0 }),
+      (err) => {
+        assert.ok(err instanceof EmptyAnswerError, `expected EmptyAnswerError, got ${err.name}`);
+        assert.equal(err.finishReason, 'length');
+        return true;
+      },
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('an empty answer is not retried, because the retry returns the same nothing', async () => {
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return ok({ choices: [{ message: { content: '   ' }, finish_reason: 'stop' }] });
+  };
+  try {
+    await assert.rejects(complete({ messages: [], env: ENV, retries: 3 }), EmptyAnswerError);
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(calls, 1, 'whitespace is not text, and retrying it burns the budget twice');
+});
+
+test('content returned as an array of parts is normalised, not discarded', async () => {
+  // Some OpenAI-compatible endpoints return content as parts rather than a
+  // string. The empty-answer check must not turn that into a regression.
+  const { result } = await capture(() =>
+    ok({
+      choices: [{ message: { content: [{ type: 'text', text: 'the digest' }] }, finish_reason: 'stop' }],
+    }),
+  );
+  assert.match(result.text, /the digest/);
+});
+
+test('the finish reason is surfaced, so a truncated answer is distinguishable', async () => {
+  const { result } = await capture(() =>
+    ok({ choices: [{ message: { content: 'partial' }, finish_reason: 'length' }] }),
+  );
+  assert.equal(result.finishReason, 'length');
+});
+
+test('the ceiling leaves room for a reasoning model to think and then write', async () => {
+  // A measured constraint, not a preference: at 1200 a real 16-fact narration
+  // came back with an empty string, and at 4000 it returned 1501 characters. The
+  // number is a ceiling rather than a target, so an unused allowance costs
+  // nothing, and a ceiling that is too low is the failure mode that was silent.
+  const { seen } = await capture(() => ok({ choices: [{ message: { content: 'x' } }] }));
+  assert.ok(
+    seen[0].body.max_tokens >= 4000,
+    `max_tokens is ${seen[0].body.max_tokens}; a reasoning model spends it before emitting content`,
+  );
+});
+
 /* ------------------------------------------------------------- the log --- */
 
 test('a failed call never carries the credential into its message', async () => {
@@ -209,6 +282,13 @@ test('a failure is reduced to a status and a kind, so it is safe to publish', ()
   });
   assert.deepEqual(classifyFailure(new BudgetExceededError(70_000, 60_000)), { kind: 'budget', status: null });
   assert.deepEqual(classifyFailure(new Error('fetch failed')), { kind: 'network', status: null });
+
+  // An empty answer is its own kind, and the two cases send the reader to
+  // different places: a ceiling that was too low, or an endpoint that answered
+  // with nothing.
+  assert.deepEqual(classifyFailure(new EmptyAnswerError('length')), { kind: 'truncated', status: null });
+  assert.deepEqual(classifyFailure(new EmptyAnswerError('stop')), { kind: 'empty', status: null });
+  assert.deepEqual(classifyFailure(new EmptyAnswerError(null)), { kind: 'empty', status: null });
   // Nothing copied from the message except a three-digit status.
   assert.equal(JSON.stringify(classifyFailure(real)).includes('discord'), false);
 });

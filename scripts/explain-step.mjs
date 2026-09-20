@@ -17,6 +17,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { complete, isConfigured, unfence, config } from '../lib/llm.mjs';
 import { readRows } from '../lib/store.mjs';
+import { explainFacts } from '../lib/render.mjs';
 
 const RUN_DIR = '.run';
 const TRIAGE = 'data/triage.jsonl';
@@ -44,18 +45,9 @@ async function main() {
     return;
   }
 
-  const facts = [
-    `advisory ${record.advisory_id}`,
-    `package ${record.package}`,
-    record.pinned ? `pinned version ${record.pinned}` : 'pinned version unknown',
-    record.upgrade ? `fixed version ${record.upgrade}` : 'no fixed version published',
-    `decision ${record.decision}`,
-    `reason ${record.reason}`,
-    `decided by the ${record.layer} layer`,
-    record.tau ? `threshold ${record.tau}` : 'no threshold applied',
-    record.model_version ? `model version ${record.model_version}` : 'no model version recorded',
-    record.severity ? `severity ${record.severity}` : 'severity not published',
-  ];
+  // Built in `lib/render.mjs` beside `buildFacts`, so the fact list and the
+  // document the gate grounds it against live in one place and cannot drift.
+  const facts = explainFacts(record);
 
   const { text } = await complete({
     messages: [

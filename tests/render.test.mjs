@@ -15,6 +15,7 @@ import {
   MARKER_BEGIN,
   MARKER_END,
   buildFacts,
+  attachDecisions,
   renderDigest,
   renderReadmeSection,
   renderSummary,
@@ -107,6 +108,10 @@ test('every narration failure kind says something specific, and none quotes the 
     { kind: 'timeout', status: null, expect: /did not answer in time/ },
     { kind: 'budget', status: null, expect: /LLM_TOKEN_BUDGET/ },
     { kind: 'network', status: null, expect: /could not be reached/ },
+    // Found live: a 200 whose content was empty. It must be a visible gap, not a
+    // silent absence — the whole point of the narration record.
+    { kind: 'truncated', status: null, expect: /ran out of tokens before it wrote anything/ },
+    { kind: 'empty', status: null, expect: /answered with no text/ },
     { kind: 'nothing-to-narrate', status: null, expect: /nothing to narrate/ },
   ];
   for (const c of kinds) {
@@ -283,7 +288,12 @@ test('a link keeps its href and is marked nofollow', () => {
 /* ---------------------------------------------------------------- facts --- */
 
 test('the fact list is the only permitted source for the narrator', () => {
-  const facts = buildFacts(payload({ errors: [{ source: 'osv', error: 'HTTP 503' }] }), decisions);
+  // `buildFacts` takes the payload with the decisions folded in — one document,
+  // the same one the gate reads. It no longer takes `decisions` as a second
+  // argument, so it cannot read a document the gate is not given.
+  const facts = buildFacts(
+    attachDecisions(payload({ errors: [{ source: 'osv', error: 'HTTP 503' }] }), decisions),
+  );
   const joined = facts.join('\n');
   assert.match(joined, /GHSA-35jh-r3h4-6jhm affects lodash pinned at 4\.17\.15; fixed in 4\.17\.21/);
   assert.match(joined, /source unavailable: osv/);

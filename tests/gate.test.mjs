@@ -21,7 +21,7 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { check, extract, indexPayload, assertGrounded } from '../lib/gate.mjs';
 import { triage } from '../lib/triage.mjs';
-import { buildFacts } from '../lib/render.mjs';
+import { buildFacts, attachDecisions, explainFacts } from '../lib/render.mjs';
 
 const PAYLOAD = {
   observed_at: '2026-01-01T00:00:00.000Z',
@@ -38,8 +38,17 @@ const PAYLOAD = {
       id: 'GHSA-35jh-r3h4-6jhm',
       package: 'lodash',
       summary: 'prototype pollution',
-      severity: '7.4',
-      affected: [{ type: 'ECOSYSTEM', introduced: '0', fixed: '4.17.21' }],
+      // OSV's real shape. A scalar `severity: '7.4'` is not a shape the API
+      // returns, and writing it here is what let a fatal defect pass review: the
+      // fixture supplied a number the live payload does not, so the
+      // fact-grounding test below asserted a property that only held for the
+      // fixture. The numeric score is arithmetic over this vector, and it lives
+      // on the decision row, not in the payload.
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }],
+      // npm publishes SEMVER ranges; PyPI publishes ECOSYSTEM ones. A fixture
+      // that gives an npm package an ECOSYSTEM range is testing a shape that
+      // cannot arrive.
+      affected: [{ type: 'SEMVER', introduced: '0', fixed: '4.17.21' }],
     },
   ],
   releases: [{ slug: 'nodejs/node', tag: 'v22.0.0', published_at: '2026-01-01T00:00:00.000Z' }],
@@ -80,6 +89,43 @@ test('a package name at the end of a sentence does not swallow the full stop', (
   const payload = { packages: [{ name: '@babel/core', ecosystem: 'npm' }] };
   const result = check('The package @babel/core is in the payload.', payload);
   assert.equal(result.ok, true, JSON.stringify(result.violations));
+});
+
+test('a bare name at the end of a sentence does not swallow the full stop either', () => {
+  // The scoped form was already covered. The keyword and state forms were not,
+  // and a live run produced `express.`, `merge.` and `Session.` as entities —
+  // names no payload can contain. Found by running it, not by reading it.
+  const payload = { packages: [{ name: 'express', ecosystem: 'npm' }], advisories: [] };
+  for (const prose of [
+    'This is reachable, and we import express.',
+    'The package express is pinned.',
+    'Bump express.',
+    'The dependency express is affected.',
+  ]) {
+    for (const p of extract(prose).packages) {
+      assert.doesNotMatch(p, /[._-]$/, `"${prose}" produced the entity ${JSON.stringify(p)}`);
+    }
+    const result = check(prose, payload);
+    assert.equal(result.ok, true, `"${prose}" -> ${JSON.stringify(result.violations)}`);
+  }
+});
+
+test('a copula is not a state verb, so an ordinary noun before "is" is not a package', () => {
+  // `PACKAGE_STATE_RE` accepted `is|are|was|…` as the predicate, so any noun
+  // followed by a copula became a package name. A live run produced `issues`
+  // from "the same underlying issues is not stated" and `upgrade` from "the
+  // upgrade is available".
+  for (const prose of [
+    'Whether the entries describe the same underlying issues is not stated.',
+    'The upgrade is available.',
+    'The reason is unclear.',
+  ]) {
+    assert.deepEqual([...extract(prose).packages], [], `"${prose}" invented a package`);
+  }
+  // ...and the form the rule exists for still matches, copula or not.
+  for (const prose of ['lodash is pinned.', 'lodash is affected.', 'lodash affected.', 'lodash is vulnerable.']) {
+    assert.ok(extract(prose).packages.has('lodash'), `"${prose}" lost the package`);
+  }
 });
 
 test('a symbol named in the payload is not treated as an invention', () => {
@@ -209,7 +255,8 @@ const UNCERTAIN_PAYLOAD = {
       ecosystem: 'npm',
       summary: 'prototype pollution',
       details: 'The merge helper does not guard against prototype pollution.',
-      severity: '7.4',
+      // OSV's real shape, not a convenient scalar. See PAYLOAD above.
+      severity: [{ type: 'CVSS_V3', score: 'CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H' }],
       affected: [{ type: 'GIT', introduced: '0', fixed: '9f2c1a4' }],
     },
   ],
@@ -239,25 +286,32 @@ async function triageWithTyped(answers) {
 }
 
 /** The same `derived` list commit-step.mjs passes, so this mirrors production. */
-function derivedFor(payload, decisions) {
+function derivedFor(decisions) {
   return [
     decisions.length,
     decisions.filter((d) => d.decision === 'act').length,
     decisions.filter((d) => d.decision === 'uncertain').length,
-    (payload.packages ?? []).length,
-    (payload.advisories ?? []).length,
-    (payload.releases ?? []).length,
-    (payload.errors ?? []).length,
   ];
 }
 
+/**
+ * The contract, asserted directly: the narrator and the gate read one document.
+ *
+ * This is the test that would have caught the defect that made narration
+ * impossible. It must build the document the way production does —
+ * `attachDecisions(payload, decisions)` — and gate against *that*, because the
+ * whole failure was that the gate was handed a different document than the
+ * narrator was. Gating the facts against the bare payload, as this used to,
+ * re-creates the bug inside the test that exists to catch it.
+ */
 function assertEveryFactIsGroundable(payload, decisions, label) {
-  const facts = buildFacts(payload, decisions);
+  const doc = attachDecisions(payload, decisions);
+  const facts = buildFacts(doc);
   assert.ok(facts.length > 0, `${label}: no facts were produced, so this proves nothing`);
-  const derived = derivedFor(payload, decisions);
+  const derived = derivedFor(decisions);
   for (const fact of facts) {
     try {
-      assertGrounded(fact, payload, { derived });
+      assertGrounded(fact, doc, { derived });
     } catch (err) {
       assert.fail(`${label}: the narrator was handed an ungroundable fact\n  ${fact}\n  ${err.message}`);
     }
@@ -306,12 +360,136 @@ test('the typed layer records its numbers structurally, not in the prose', async
   assert.doesNotMatch(row.reason, /\d/, 'a number in the reason is a sentence the gate must reject');
 });
 
-test('the wording this replaced is still rejected, so the fix is not cosmetic', () => {
-  const old = 'GHSA-35jh-r3h4-6jhm affects lodash pinned at 4.17.15; decision act because typed layer scored 0.72 ≥ τ 0.6 — treat as reachable';
-  const result = check(old, UNCERTAIN_PAYLOAD, { derived: [1, 1, 0, 1, 1, 0, 0] });
+test('the wording this replaced is still rejected, even against the projected document', async () => {
+  // The projection folds decision rows into the payload, so anything written
+  // into a `reason` becomes groundable. This is the test that folding did not
+  // launder the one number the design deliberately keeps out of the narrator's
+  // reach. It holds for two reasons, both asserted here: reasons are digit-free
+  // (above), and `typed.*` and `tau` are not in the projection (below).
+  const decisions = await triageWithTyped({
+    we_use_the_vulnerable_component: { type: 'noul', noul: 0.95 },
+    reaches_a_trust_boundary: { type: 'noul', noul: 0.9 },
+  });
+  const doc = attachDecisions(UNCERTAIN_PAYLOAD, decisions);
+
+  const old =
+    'GHSA-35jh-r3h4-6jhm affects lodash pinned at 4.17.15; decision act because typed layer scored 0.72 ≥ τ 0.6 — treat as reachable';
+  const result = check(old, doc, { derived: derivedFor(decisions) });
   assert.equal(result.ok, false, 'the pre-fix reason must still fail the gate — that is why it changed');
   assert.ok(
     result.violations.some((v) => v.token === '0.72' || v.token === '0.6'),
     `expected the score or tau to be the offending entity, saw ${JSON.stringify(result.violations.map((v) => v.token))}`,
   );
+});
+
+/* --------------------------------------- the document is the permission list --- */
+
+test('the projection is the permission list, and the typed layer is outside it', async () => {
+  const decisions = await triageWithTyped({
+    we_use_the_vulnerable_component: { type: 'noul', noul: 0.95 },
+    reaches_a_trust_boundary: { type: 'noul', noul: 0.9 },
+  });
+  const row = decisions[0];
+  const doc = attachDecisions(UNCERTAIN_PAYLOAD, decisions);
+
+  assert.equal(row.typed.we_use_the_vulnerable_component, 0.95, 'the score is on the decision row');
+  assert.equal(row.tau, 0.8, 'and so is tau');
+  assert.equal('typed' in doc.decisions[0], false, 'neither is in the document the narrator reads');
+  assert.equal('tau' in doc.decisions[0], false);
+
+  // So a number from the typed layer stays an entity the gate rejects. This is
+  // the tripwire the number-free-reasons rule used to provide at runtime, now
+  // asserted directly rather than inferred from a production failure.
+  for (const text of ['the reach score was 0.95', 'the threshold tau was 0.8']) {
+    const r = check(text, doc, { derived: derivedFor(decisions) });
+    assert.equal(r.ok, false, `expected the gate to reject "${text}"`);
+  }
+});
+
+test('a numeric severity is groundable because the decision row is in the document', async () => {
+  // The exact defect, pinned. `triage` computes a numeric severity from OSV's
+  // CVSS vector; the payload holds only the vector string. While the gate read
+  // the bare payload and the narrator read `(payload, decisions)`, every fact
+  // carrying a severity was ungroundable — 10 of 16 in a live run — so narration
+  // could never commit, and 207 green tests did not notice.
+  const decisions = await triage(UNCERTAIN_PAYLOAD, { typed: { enabled: false } });
+  const row = decisions[0];
+  assert.equal(typeof row.severity, 'number', 'the score is arithmetic over the vector, so it is a number');
+
+  const facts = buildFacts(attachDecisions(UNCERTAIN_PAYLOAD, decisions));
+  const withSeverity = facts.filter((f) => f.includes('severity'));
+  assert.ok(
+    withSeverity.length > 0,
+    'the fixture must actually produce a severity fact, or this test proves nothing',
+  );
+
+  const doc = attachDecisions(UNCERTAIN_PAYLOAD, decisions);
+  for (const fact of withSeverity) {
+    const r = check(fact, doc, { derived: derivedFor(decisions) });
+    assert.equal(r.ok, true, `ungroundable: ${fact}\n${JSON.stringify(r.violations)}`);
+  }
+
+  // Against the bare payload it still fails. If this ever passes, the projection
+  // is doing nothing and the test above is vacuous.
+  const againstBarePayload = check(withSeverity[0], UNCERTAIN_PAYLOAD, { derived: derivedFor(decisions) });
+  assert.equal(againstBarePayload.ok, false, 'the payload alone must not ground the severity');
+});
+
+test('every fact the explain narrator is given is in the record it is gated against', () => {
+  // The `ask` path has no payload. `reply-step.mjs` grounds the answer against
+  // `{ record, stack }` — the stored decision row plus the watch list — and the
+  // fact list is a projection of that record. Same rule, different document:
+  // nothing the narrator is told may be missing from the ground. Asserted field
+  // by field, so a fact added that is not a record field fails a test rather
+  // than a live reply.
+  //
+  // The symbol is the interesting case: `reason` names `merge`, which is only
+  // groundable because `stack` carries `usage.imported_symbols`. That is the
+  // mechanism, and this is the assertion that it is load-bearing.
+  const record = {
+    advisory_id: 'GHSA-35jh-r3h4-6jhm',
+    package: 'lodash',
+    ecosystem: 'npm',
+    pinned: '4.17.15',
+    upgrade: '4.17.21',
+    decision: 'act',
+    reason: 'affected, and we import merge',
+    layer: 'rules',
+    tau: 0.8,
+    model_version: null,
+    severity: 7.4,
+    typed: null,
+  };
+  const ground = {
+    record,
+    stack: {
+      packages: [
+        {
+          name: 'lodash',
+          ecosystem: 'npm',
+          pinned: '4.17.15',
+          usage: { imported_symbols: ['merge', 'get'], call_sites: [], runtime: 'node' },
+        },
+      ],
+    },
+  };
+
+  const facts = explainFacts(record);
+  assert.ok(facts.length > 0, 'no facts were produced, so this proves nothing');
+  for (const fact of facts) {
+    const r = check(fact, ground, { derived: [] });
+    assert.equal(r.ok, true, `ungroundable fact for the explain path: ${fact}\n${JSON.stringify(r.violations)}`);
+  }
+
+  // The one thing the narrator is not told is `typed`, so it is never in the
+  // fact list — and a reply cannot state it.
+  assert.doesNotMatch(facts.join('\n'), /typed/);
+
+  // And the symbol really is doing the work: drop it from the stack and the
+  // reason stops being groundable, which is what makes the assertion above
+  // meaningful rather than incidental.
+  const withoutSymbols = { record, stack: { packages: [{ name: 'lodash', ecosystem: 'npm' }] } };
+  const reasonFact = facts.find((f) => f.includes('import merge'));
+  assert.ok(reasonFact, 'the fixture must produce a symbol-bearing fact');
+  assert.equal(check(reasonFact, withoutSymbols, { derived: [] }).ok, false);
 });

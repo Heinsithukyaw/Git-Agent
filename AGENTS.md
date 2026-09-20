@@ -45,12 +45,40 @@ containment gate (I2) runs in the job that has no model key.
 just numbers: a hallucinated `GHSA-…` identifier inside a fluent sentence is the
 same failure class as an invented version number.
 
+**The payload is the narrator's input, and it is the gate's input. One document.**
+The gate may only ever be handed the document the narrator was shown the facts
+of. Hand it a different document and it will reject correct prose for stating
+something the narrator was legitimately told — every run, deterministically,
+which is exactly how that stays invisible.
+
+That is not a hypothetical. `buildFacts()` once took `decisions` as a second
+argument while `commit-step` gated the prose against `payload.json` alone. A
+decision's `severity` is arithmetic over OSV's CVSS vector and lives in
+`decisions.json`; the payload holds only the vector string. Measured on a live
+run: **10 of 16 facts the narrator received were ungroundable**, so every
+narration containing a severity failed the gate and the digest could never
+commit. 207 tests passed throughout, because the narration path had never
+completed a live call.
+
+So the decisions are folded into the payload by `attachDecisions()`, and
+`buildFacts()` takes **one argument** — a function of one argument cannot read a
+second document, and that is the enforcement. `attachDecisions()` projects
+exactly the fields the narrator may say; everything it leaves out (`tau`,
+`typed.*`, the composite scores) stays outside the document and stays
+ungroundable, so a model-derived number in the prose is still an entity the gate
+rejects.
+
 The gate runs **only** in a job that holds no model key (`commit` in
 `digest.yml`, `reply` in `ask.yml`). A gate that shares a job with the model is a
-gate the model's input can influence.
+gate the model's input can influence. The document it reads is assembled there,
+not in the job that holds the key.
 
 - **Enforced by:** `lib/gate.mjs`, called from `scripts/commit-step.mjs` and
   `scripts/reply-step.mjs`; unit-tested in `tests/gate.test.mjs`.
+- **Enforced by:** `lib/render.mjs` → `buildFacts(payload)`, whose arity is the
+  check. `tests/gate.test.mjs` asserts that a numeric severity is groundable
+  against the document and *not* against the bare payload, so the projection
+  cannot become a no-op unnoticed.
 - **Hard limit:** the gate is exact and deterministic and must stay that way. A
   paraphrase-tolerant second pass may only ever *queue a sentence for human
   review*. It must never gate a commit.

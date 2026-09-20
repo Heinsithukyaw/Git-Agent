@@ -19,7 +19,7 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { triage } from '../lib/triage.mjs';
-import { buildFacts } from '../lib/render.mjs';
+import { buildFacts, attachDecisions } from '../lib/render.mjs';
 import { complete, isConfigured, narrationMessages, unfence, config, classifyFailure } from '../lib/llm.mjs';
 import { probe } from '../lib/probe.mjs';
 
@@ -98,7 +98,11 @@ async function main() {
     return;
   }
 
-  const facts = buildFacts(payload, decisions);
+  // The narrator's input is the payload with the decisions folded in — the same
+  // document `commit-step` will gate the prose against, built by the same
+  // function. This step does not write it: the gate's ground truth is assembled
+  // in the job that holds no model key, not here.
+  const facts = buildFacts(attachDecisions(payload, decisions));
   if (!facts.length) {
     console.log('nothing to narrate');
     recordNarration({ configured: true, ok: false, kind: 'nothing-to-narrate', status: null });

@@ -34,6 +34,7 @@ import {
   renderSummary,
   replaceBetweenMarkers,
   diffEvents,
+  attachDecisions,
   MARKER_BEGIN,
   MARKER_END,
 } from '../lib/render.mjs';
@@ -84,21 +85,23 @@ async function main() {
   // ---- 1. the gate -------------------------------------------------------
   const gated = { checked: null, narration: false };
   if (narration && narration.trim()) {
-    // derived: the scalars the renderer computed itself. These are arithmetic
-    // over the payload, not invention — but they must be passed, not assumed.
+    // The prose is gated against the document the narrator was given — the
+    // payload with the decisions folded in — assembled here, in the job that
+    // holds no model key, by the same function `narrate-step` used. The narrator
+    // and the gate read one document; they cannot drift apart.
+    //
+    // `derived` stays for the scalars the *renderer* computes and the narrator is
+    // never shown (the counts in the digest header). Anything the narrator can
+    // say is in the document already.
     const derived = [
       decisions.length,
       decisions.filter((d) => d.decision === 'act').length,
       decisions.filter((d) => d.decision === 'uncertain').length,
-      (payload.packages ?? []).length,
-      (payload.advisories ?? []).length,
-      (payload.releases ?? []).length,
-      (payload.errors ?? []).length,
     ];
-    assertGrounded(narration, payload, { derived });
+    assertGrounded(narration, attachDecisions(payload, decisions), { derived });
     gated.checked = true;
     gated.narration = true;
-    console.log('containment gate: narration is grounded in the payload');
+    console.log('containment gate: narration is grounded in the narrator\'s input');
   } else {
     console.log('containment gate: no narration to check (deterministic digest)');
   }
