@@ -17,6 +17,7 @@ import {
   buildFacts,
   attachDecisions,
   narrationBody,
+  narrationGap,
   renderDigest,
   renderReadmeSection,
   renderSummary,
@@ -161,6 +162,31 @@ test('a narration that reduces to a title is a gap, not a quiet success', () => 
   assert.match(md, /`narration`/);
   assert.match(md, /wrote a title and nothing else/);
   assert.equal(md.split('\n').filter((l) => /^#\s/.test(l)).length, 1);
+});
+
+test('narrationGap is the one verdict, shared by the digest and the run record', () => {
+  // Two components need this answer and they must not be able to disagree:
+  // `renderDigest` prints the gap line, `commit-step` decides whether the run is
+  // `ok` or `degraded`. Judged separately, the digest carries a gap section while
+  // the heartbeat and the published page say `ok` — two surfaces contradicting
+  // each other about the same run. That is what the integration test caught.
+  const failed = { configured: true, ok: false, kind: 'http', status: 401 };
+  const answered = { configured: true, ok: true, kind: null, status: 200 };
+
+  assert.equal(narrationGap({ narrationStatus: failed }).gap, true);
+  assert.equal(narrationGap({ narrationStatus: failed }).status.status, 401, 'the status travels, so the line can name the code');
+  assert.equal(narrationGap({ narrationStatus: answered }).gap, false);
+  assert.equal(narrationGap({ narration: 'Body.', narrationStatus: answered }).gap, false);
+  assert.deepEqual(narrationGap({ narration: '# Dependency digest\n', narrationStatus: answered }), {
+    gap: true,
+    kind: 'title-only',
+    status: null,
+  });
+  assert.equal(
+    narrationGap({}).gap,
+    false,
+    'no narration and no record is a keyless instance — a supported mode, not a gap',
+  );
 });
 
 test('narrationBody is the outline rule, stated once', () => {

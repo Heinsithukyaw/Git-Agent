@@ -35,6 +35,7 @@ import {
   replaceBetweenMarkers,
   diffEvents,
   attachDecisions,
+  narrationGap,
   MARKER_BEGIN,
   MARKER_END,
 } from '../lib/render.mjs';
@@ -120,11 +121,17 @@ async function main() {
   // That is exactly the distinction this vocabulary already had — the job result
   // could not express it, because `narrate-step` deliberately exits 0 rather than
   // failing the run over a missing paragraph.
-  const narrationBroke = Boolean(narrationStatus?.configured && !narrationStatus.ok);
+  //
+  // The judgement is `narrationGap()` in the renderer, not a local one, because
+  // the digest prints the same verdict. A narration that answered 200 and
+  // produced nothing but a title is a gap, and if this job disagreed, the digest
+  // would carry a gap section while the heartbeat and the published page said
+  // `ok`. The run record and the document must not contradict each other.
+  const narrationIsGap = narrationGap({ narration, narrationStatus });
   const status =
     narrateResult === 'failure'
       ? 'failed'
-      : narrationBroke || (payload.errors ?? []).length > 0
+      : narrationIsGap.gap || (payload.errors ?? []).length > 0
         ? 'degraded'
         : 'ok';
 

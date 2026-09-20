@@ -45,6 +45,16 @@ function warn(message) {
  *
  * Only the status and a coarse kind are recorded — never the endpoint's response
  * body, which is not ours to publish. See `classifyFailure()`.
+ *
+ * **`user_agent` is recorded here and deliberately nowhere else.** A relay that
+ * gates on client identity can refuse a request *before* reading the credential,
+ * and its error names the client rather than the key — so "the key is wrong" and
+ * "the identity you configured is no longer accepted" produce the same 401. The
+ * identity is the one fact that separates them, and without it the artifact
+ * cannot. It stays out of `history/runs.jsonl` and out of the digest because
+ * those are committed: the identity names the infrastructure, and this
+ * repository's rule is that the endpoint is the user's business, not the
+ * template's.
  */
 function recordNarration(record) {
   fs.writeFileSync(
@@ -123,6 +133,7 @@ async function main() {
       kind: null,
       status: status ?? null,
       model: model ?? null,
+      user_agent: config(process.env).userAgent || null,
       tokens: usage?.total_tokens ?? null,
     });
   } catch (err) {
@@ -135,6 +146,7 @@ async function main() {
       ok: false,
       ...classifyFailure(err),
       model: config(process.env).model || null,
+      user_agent: config(process.env).userAgent || null,
     });
   }
 }
