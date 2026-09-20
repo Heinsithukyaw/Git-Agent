@@ -58,6 +58,16 @@ and that is enforced by GitHub, not by discipline.
 5. **Enable the schedule** — `digest.yml` runs daily at 06:17 UTC. Nothing else is
    required, and nothing is enabled by default that executes third-party code.
 
+   **Optional: a typed decision layer.** `JEV_ENABLED` adds a narrow judgment
+   layer that answers the two questions the rules cannot — do we import the
+   vulnerable component, and does it reach a trust boundary — one atomic question
+   at a time, and returns typed values rather than prose. It is **off by default**,
+   and turning it on changes nothing else: the rules tier still decides everything
+   it can, and the model still writes the digest. Set `JEV_ENABLED=true`,
+   `JEV_BASE_URL` (the layer's root, including its version prefix — the endpoint
+   called is `{JEV_BASE_URL}/systemone`), the `JEV_API_KEY` secret, and optionally
+   `JEV_MODEL` (default `jev-latest`).
+
 ---
 
 ## Where it runs: three repositories, not one
@@ -232,6 +242,11 @@ rule at all. The short version:
 - **The documented configuration surface is the whole configuration surface.** Every
   variable a workflow asks for is in the table, and every variable the code reads is
   delivered by a workflow. Both halves are checked, because both had already drifted.
+- **The optional typed layer decides with a band, not a threshold.** Its answers are
+  probabilities that carry their own certainty, so a value near the middle is *no
+  signal* rather than medium intensity. A score inside the band, an absent answer, and
+  two answers that disagree all escalate to a human instead of resolving — and a
+  fallback on a field the layer is expected to send escalates too, never permits.
 - **Commands are parsed, never interpreted.** An allowlisted verb, an argument that must
   appear in the watch list, and an author gate that exits rather than warns. The cheap
   workflow-level guard names exactly the same three associations as the real gate, so it

@@ -1,19 +1,33 @@
 /**
  * Advisory triage.
  *
- * Two properties are load-bearing and both are tested here:
+ * Three properties are load-bearing and all are tested here:
  *
  *   1. **Rules are authoritative.** The typed layer may only move a case the
  *      rules could not decide. It can never overturn a verdict that was reached
  *      deterministically, because a model that can override arithmetic is a
  *      model that can silently clear a real advisory.
- *   2. **Thresholding is code.** The model returns typed values and a
- *      confidence; the comparison against τ happens here, and is replayable.
+ *   2. **Thresholding is code.** The model returns typed values; the comparison
+ *      against τ happens here, and is replayable.
+ *   3. **The request the code sends is the request the API documents.** Nothing
+ *      asserted that, and a `422`-on-every-call bug shipped because of it. A
+ *      stubbed response cannot catch it: the stub is wrong in the same
+ *      direction as the code, so it stays green forever.
  */
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { DECISIONS, TAU_DEFAULT, CONFIDENCE_FLOOR, rulesDecide, compose, severityScore, severityLabel, triage } from '../lib/triage.mjs';
+import {
+  DECISIONS,
+  TAU_DEFAULT,
+  DEFAULT_TYPED_MODEL,
+  rulesDecide,
+  compose,
+  severityScore,
+  severityLabel,
+  triage,
+  typedDecide,
+} from '../lib/triage.mjs';
 
 const pkg = (over = {}) => ({
   name: 'lodash',
@@ -121,7 +135,7 @@ test('a qualitative severity is surfaced as a label, quoted from the source', ()
 
 test('rules are authoritative when they reached a verdict', () => {
   const rules = rulesDecide(advisory(), pkg());
-  const composed = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { noul: 0, confidence: 1 } }, modelVersion: 'x' } });
+  const composed = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { noul: 0 } }, modelVersion: 'x' } });
   assert.equal(composed.decision, DECISIONS.ACT, 'a typed layer must not overturn a rule');
   assert.equal(composed.layer, 'rules');
   assert.equal(composed.typed, null);
@@ -133,43 +147,222 @@ test('an uncertain case with no typed layer is surfaced, not resolved', () => {
   assert.match(composed.reason, /needs your call/);
 });
 
-test('a typed answer below the confidence floor does not decide anything', () => {
-  const rules = rulesDecide(advisory(), pkg({ usage: {} }));
-  const typed = {
-    answers: {
-      reaches_a_trust_boundary: { noul: 1, confidence: CONFIDENCE_FLOOR - 0.01 },
-      we_use_the_vulnerable_component: { noul: 1, confidence: CONFIDENCE_FLOOR - 0.01 },
-    },
-    modelVersion: 'm1',
-  };
-  const composed = compose({ rules, typed });
-  assert.equal(composed.decision, DECISIONS.UNCERTAIN);
-  assert.match(composed.reason, /below the confidence floor/);
+/* ------------------------------------------------------- the noul band --- */
+
+const uncertainRules = () => rulesDecide(advisory(), pkg({ usage: {} }));
+
+/**
+ * A typed-layer result with the only shape the API can actually return.
+ *
+ * A `noul` answer is `{type, noul}`. The earlier fixtures here added a
+ * `confidence` key that `noul` does not have, which is how a test came to assert
+ * a shape production could never produce — and to pass while doing it.
+ */
+const typedWith = (uses, reach) => ({
+  answers: {
+    we_use_the_vulnerable_component: { type: 'noul', noul: uses },
+    reaches_a_trust_boundary: { type: 'noul', noul: reach },
+  },
+  modelVersion: 'jev-1.13.0',
 });
 
-test('a typed answer at or above tau is act, below is watch', () => {
-  const rules = rulesDecide(advisory(), pkg({ usage: {} }));
-  const answer = (uses, reach) => ({
-    answers: {
-      we_use_the_vulnerable_component: { noul: uses, confidence: 0.9 },
-      reaches_a_trust_boundary: { noul: reach, confidence: 0.9 },
-    },
-    modelVersion: 'm1',
-  });
+test('a typed answer in the middle of the range escalates instead of deciding', () => {
+  // 0.5 is the documented "no signal" value: equal probability for yes and no.
+  // The bug this replaces read `confidence` off these answers, fell back to
+  // `?? 1`, and so treated "no such field" as maximum certainty.
+  const composed = compose({ rules: uncertainRules(), typed: typedWith(0.5, 0.5) });
+  assert.equal(composed.decision, DECISIONS.UNCERTAIN);
+  assert.match(composed.reason, /no signal/);
+  assert.equal(composed.typed.score, 0.5, 'the score is still recorded, so the band is auditable');
+  assert.ok(!('confidence' in composed.typed), 'a noul answer has no confidence to record');
+});
 
-  const act = compose({ rules, typed: answer(0.9, 0.9) });
+test('two answers that disagree land in the band, because a mean cannot reconcile them', () => {
+  const composed = compose({ rules: uncertainRules(), typed: typedWith(1, 0) });
+  assert.equal(composed.decision, DECISIONS.UNCERTAIN, 'a definite yes and a definite no is not a maybe');
+  assert.equal(composed.typed.score, 0.5);
+});
+
+test('an absent answer escalates — it is never read as a no', () => {
+  const rules = uncertainRules();
+  const missing = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.9 } }, modelVersion: 'm' } });
+  assert.equal(missing.decision, DECISIONS.UNCERTAIN, 'a dropped answer must not clear a real advisory');
+  assert.equal(missing.typed.score, null);
+  assert.match(missing.reason, /nothing usable/);
+
+  const malformed = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { noul: 0.9 }, reaches_a_trust_boundary: { noul: 'not a number' } }, modelVersion: 'm' } });
+  assert.equal(malformed.decision, DECISIONS.UNCERTAIN);
+});
+
+test('a decisive answer above tau is act, and a decisive one below the band is watch', () => {
+  const act = compose({ rules: uncertainRules(), typed: typedWith(0.9, 0.9) });
   assert.equal(act.decision, DECISIONS.ACT);
   assert.equal(act.layer, 'typed');
-  assert.equal(act.modelVersion, 'm1');
+  assert.equal(act.modelVersion, 'jev-1.13.0');
+  assert.equal(act.typed.score, 0.9);
 
-  const watch = compose({ rules, typed: answer(0.4, 0.2) });
+  const watch = compose({ rules: uncertainRules(), typed: typedWith(0.4, 0.2) });
   assert.equal(watch.decision, DECISIONS.WATCH);
+  assert.equal(watch.typed.score, 0.3);
+
+  const decisiveNo = compose({ rules: uncertainRules(), typed: typedWith(0.1, 0.1) });
+  assert.equal(decisiveNo.decision, DECISIONS.WATCH);
+});
+
+test('the band moves with tau, so there is still exactly one tunable parameter', () => {
+  // At τ 0.9 the band is (0.1, 0.9): almost everything escalates. That is the
+  // right posture when acting on a false yes is expensive.
+  const narrow = compose({ rules: uncertainRules(), typed: typedWith(0.6, 0.6), tau: 0.9 });
+  assert.equal(narrow.decision, DECISIONS.UNCERTAIN);
+  // At τ 0.6 the same answer is decisive.
+  const wide = compose({ rules: uncertainRules(), typed: typedWith(0.6, 0.6), tau: 0.6 });
+  assert.equal(wide.decision, DECISIONS.ACT);
+});
+
+test('a tau below the middle closes the band instead of inverting it', () => {
+  // "Act on a coin-flip" is a coherent setting: it leaves no middle to
+  // escalate. What it must not do is produce a band with its edges swapped,
+  // which would swallow every score and decide nothing at all.
+  const rules = uncertainRules();
+  const atMiddle = compose({ rules, typed: typedWith(0.5, 0.5), tau: 0.4 });
+  assert.equal(atMiddle.decision, DECISIONS.ACT, 'with no band left, the threshold is the whole rule');
+  const below = compose({ rules, typed: typedWith(0.2, 0.2), tau: 0.4 });
+  assert.equal(below.decision, DECISIONS.WATCH);
+  const high = compose({ rules, typed: typedWith(0.9, 0.9), tau: 0.4 });
+  assert.equal(high.decision, DECISIONS.ACT);
 });
 
 test('tau is recorded with the decision, because a decision is replayable', () => {
   const composed = compose({ rules: rulesDecide(advisory(), pkg()), typed: null, tau: 0.75 });
   assert.equal(composed.tau, 0.75);
   assert.equal(compose({ rules: rulesDecide(advisory(), pkg()) }).tau, TAU_DEFAULT);
+});
+
+/* --------------------------------------------------- typed-layer transport --- */
+
+/** Capture the request the code actually sends, and answer with `respond`. */
+async function captureRequest(respond, opts = {}) {
+  const realFetch = globalThis.fetch;
+  const seen = [];
+  globalThis.fetch = async (url, init) => {
+    seen.push({ url, init, body: JSON.parse(init.body) });
+    return respond(seen.length);
+  };
+  try {
+    const result = await typedDecide(advisory(), pkg(), {
+      baseUrl: 'https://typed.invalid/v1',
+      apiKey: 'test-key',
+      model: opts.model,
+      retries: opts.retries ?? 0,
+    });
+    return { seen, result };
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+const okResponse = (json) => ({
+  ok: true,
+  status: 200,
+  headers: { get: () => null },
+  json: async () => json,
+});
+
+test('the request body uses `model` as a string, which is what the API documents', async () => {
+  // The defect this pins: `selectedModels: model ? [model] : undefined`. Their
+  // stale examples show `selectedModels`, the API reference and the SDK do not,
+  // and a request carrying it fails validation on every single call.
+  const { seen } = await captureRequest(() => okResponse({ answers: {} }), { model: 'jev-1.13.0' });
+  const body = seen[0].body;
+  assert.equal(body.model, 'jev-1.13.0');
+  assert.equal(typeof body.model, 'string', '`model` is a string, not a one-element array');
+  assert.ok(!('selectedModels' in body), 'selectedModels is not a field of this API');
+  assert.deepEqual(Object.keys(body).sort(), ['model', 'questions', 'state']);
+  assert.equal(seen[0].url, 'https://typed.invalid/v1/systemone');
+});
+
+test('an unset model still sends a usable string, never undefined', async () => {
+  const { seen } = await captureRequest(() => okResponse({ answers: {} }));
+  assert.equal(seen[0].body.model, DEFAULT_TYPED_MODEL);
+  assert.equal(typeof seen[0].body.model, 'string', 'a dropped field is a 422, which is the bug again');
+});
+
+test('every question is asked as a noul, and the state carries the advisory', async () => {
+  const { seen } = await captureRequest(() => okResponse({ answers: {} }));
+  const { questions, state } = seen[0].body;
+  assert.deepEqual(Object.keys(questions).sort(), ['reaches_a_trust_boundary', 'we_use_the_vulnerable_component']);
+  for (const q of Object.values(questions)) assert.equal(q.type, 'noul');
+  assert.equal(state.advisory.id, 'GHSA-35jh-r3h4-6jhm');
+  assert.equal(state.ours.package, 'lodash');
+});
+
+test('the versioned model and the token usage are read off the response', async () => {
+  const { result } = await captureRequest(() =>
+    okResponse({
+      answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.91 } },
+      model: 'jev-1.13.0',
+      usage: { input_tokens: 412, output_tokens: 3 },
+    }),
+  );
+  assert.equal(result.modelVersion, 'jev-1.13.0', 'the response field is `model`, not `model_version`');
+  assert.equal(result.usage.input_tokens, 412);
+  assert.equal(result.answers.we_use_the_vulnerable_component.noul, 0.91);
+});
+
+test('overload and rate limiting are retried, and 529 is not mistaken for permanent', async () => {
+  for (const status of [429, 529, 503]) {
+    const { seen } = await captureRequest(
+      (n) => (n === 1 ? { ok: false, status, headers: { get: () => '0' }, text: async () => 'busy' } : okResponse({ answers: {} })),
+      { retries: 1 },
+    );
+    assert.equal(seen.length, 2, `HTTP ${status} should have been retried`);
+  }
+});
+
+test('a client error is not retried, and its body is kept because it names the bad field', async () => {
+  const { seen } = await (async () => {
+    const realFetch = globalThis.fetch;
+    const calls = [];
+    globalThis.fetch = async () => {
+      calls.push(1);
+      return { ok: false, status: 422, headers: { get: () => null }, text: async () => '{"detail":"model: field required"}' };
+    };
+    try {
+      await assert.rejects(
+        typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
+        /422.*model: field required/,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    return { seen: calls };
+  })();
+  assert.equal(seen.length, 1, 'a 422 is the request being wrong, so retrying it cannot help');
+});
+
+test('a retry-after header is honoured over the default backoff', async () => {
+  const started = Date.now();
+  const { seen } = await captureRequest(
+    (n) => (n === 1 ? { ok: false, status: 429, headers: { get: () => '1' }, text: async () => '' } : okResponse({ answers: {} })),
+    { retries: 1 },
+  );
+  assert.equal(seen.length, 2);
+  assert.ok(Date.now() - started >= 900, 'a retry-after of 1s must actually be waited out');
+});
+
+test('triage records the usage, so what the layer cost is auditable', async () => {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => okResponse({ answers: {}, model: 'jev-1.13.0', usage: { input_tokens: 7, output_tokens: 1 } });
+  try {
+    const rows = await triage(
+      { observed_at: '2026-01-01T00:00:00.000Z', packages: [pkg({ usage: {} })], advisories: [advisory()] },
+      { typed: { enabled: true, baseUrl: 'https://typed.invalid/v1', apiKey: 'k' } },
+    );
+    assert.equal(rows[0].typed_usage.input_tokens, 7);
+    assert.equal(rows[0].model_version, 'jev-1.13.0');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
 });
 
 /* --------------------------------------------------------------- triage --- */

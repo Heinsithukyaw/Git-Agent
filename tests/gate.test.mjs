@@ -215,7 +215,10 @@ async function triageWithTyped(answers) {
   globalThis.fetch = async () => ({
     ok: true,
     status: 200,
-    json: async () => ({ answers, model_version: 'stub-2026-01-01' }),
+    headers: { get: () => null },
+    // `model`, not `model_version`: the latter is not a field of this API, and
+    // a stub that invents it hides the fact that the code reads it.
+    json: async () => ({ answers, model: 'stub-2026-01-01' }),
   });
   try {
     return await triage(UNCERTAIN_PAYLOAD, {
@@ -260,8 +263,8 @@ test('every fact the narrator receives is one the gate can accept — rules path
 
 test('every fact the narrator receives is one the gate can accept — typed layer decided', async () => {
   const decisions = await triageWithTyped({
-    we_use_the_vulnerable_component: { noul: 1, confidence: 0.9 },
-    reaches_a_trust_boundary: { noul: 1, confidence: 0.8 },
+    we_use_the_vulnerable_component: { type: 'noul', noul: 0.95 },
+    reaches_a_trust_boundary: { type: 'noul', noul: 0.9 },
   });
   assert.equal(decisions[0].layer, 'typed', 'the stub should have moved an uncertain case');
   assert.equal(decisions[0].decision, 'act');
@@ -269,25 +272,27 @@ test('every fact the narrator receives is one the gate can accept — typed laye
   assert.match(facts.join('\n'), /judged this reachable/);
 });
 
-test('every fact the narrator receives is one the gate can accept — typed layer below the floor', async () => {
+test('every fact the narrator receives is one the gate can accept — typed layer in the band', async () => {
   const decisions = await triageWithTyped({
-    we_use_the_vulnerable_component: { noul: 1, confidence: 0.1 },
-    reaches_a_trust_boundary: { noul: 1, confidence: 0.2 },
+    we_use_the_vulnerable_component: { type: 'noul', noul: 0.5 },
+    reaches_a_trust_boundary: { type: 'noul', noul: 0.5 },
   });
-  assert.equal(decisions[0].decision, 'uncertain', 'below the floor, nothing is decided');
-  const facts = assertEveryFactIsGroundable(UNCERTAIN_PAYLOAD, decisions, 'typed layer, below floor');
-  assert.match(facts.join('\n'), /below the confidence floor/);
+  assert.equal(decisions[0].decision, 'uncertain', 'in the band, nothing is decided');
+  const facts = assertEveryFactIsGroundable(UNCERTAIN_PAYLOAD, decisions, 'typed layer, in the band');
+  assert.match(facts.join('\n'), /no signal/);
 });
 
 test('the typed layer records its numbers structurally, not in the prose', async () => {
   const decisions = await triageWithTyped({
-    we_use_the_vulnerable_component: { noul: 1, confidence: 0.9 },
-    reaches_a_trust_boundary: { noul: 1, confidence: 0.8 },
+    we_use_the_vulnerable_component: { type: 'noul', noul: 0.95 },
+    reaches_a_trust_boundary: { type: 'noul', noul: 0.9 },
   });
   const row = decisions[0];
   assert.equal(typeof row.typed.score, 'number', 'the score must be recorded, not discarded');
   assert.equal(row.tau, 0.6, 'tau is recorded on the row');
-  assert.equal(row.typed.confidence, 0.8, 'confidence is the min of the two answers');
+  assert.equal(row.typed.score, 0.925, 'the score is the mean of the two answers, rounded');
+  assert.equal(row.model_version, 'stub-2026-01-01', 'the resolved model is read from `model`');
+  assert.ok(!('confidence' in row.typed), 'a noul answer carries no confidence to record');
   assert.doesNotMatch(row.reason, /\d/, 'a number in the reason is a sentence the gate must reject');
 });
 

@@ -155,8 +155,8 @@ Configuration surface, and nothing more:
 | `LLM_MODEL` | variable | model or deployment name |
 | `LLM_TOKEN_BUDGET` | variable | tokens per run, default `60000` |
 | `JEV_ENABLED` | variable | `false` (default) |
-| `JEV_BASE_URL` | variable | the typed layer's root; only when `JEV_ENABLED` is true |
-| `JEV_MODEL` | variable | model or deployment name for the typed layer |
+| `JEV_BASE_URL` | variable | the typed layer's root, including its version prefix — the endpoint called is `POST {JEV_BASE_URL}/systemone`; only when `JEV_ENABLED` is true |
+| `JEV_MODEL` | variable | model or deployment name for the typed layer; default `jev-latest` |
 | `SANDBOX_ENABLED` | variable | `false` (default) |
 | `AGENT_LANG` | variable | reply language, default `en` |
 
@@ -176,6 +176,27 @@ still gets a complete, correct, gated digest — narration is simply the
 deterministic template.
 
 Enabling a decision layer **adds** a tier; it never switches providers.
+
+**The typed layer's decision rule is a band, not a threshold.** A `noul` answer
+is a probability that carries its own certainty, so a value near the middle is
+*no signal* rather than medium intensity — `>= 0.5` is the wrong way to read one,
+and a single threshold therefore has to guess in exactly the region where
+guessing is least defensible. The band is symmetric about the middle and its
+width is set by τ, so there is still exactly one tunable parameter. A score
+inside the band, an absent answer, and two answers that disagree all escalate:
+none of them resolves to a decision.
+
+- **Enforced by:** `tests/triage.test.mjs`, the `noul` band tests.
+- **Why it erodes:** `noul` has no `confidence` field. Reading one anyway does
+  not fail — it returns `undefined` — and the reflexive `?? 1` guard turns "no
+  such field" into *maximum certainty*, which silently disables the check it was
+  written to perform. A fallback on a response field the layer is expected to
+  send must default to **escalate**, never to **permit**.
+- **The request body is asserted, not assumed.** `tests/triage.test.mjs` pins
+  `{model, questions, state}`, with `model` a **string** and `selectedModels`
+  absent. A stubbed *response* cannot catch a wrong *request*: the stub is wrong
+  in the same direction as the code, so it stays green forever. That is how a
+  request that failed validation on every call shipped with 161 tests passing.
 
 ### I10 — The web surface holds no key and calls no model
 
@@ -381,13 +402,17 @@ node scripts/fetch-step.mjs && node scripts/narrate-step.mjs && \
   `tests/invariants.test.mjs` proves the check fires. A check that has never been
   seen to fail is a check nobody can trust — write the synthetic case that breaks
   it before you write the code that fixes it.
+- **A new outbound API call** is asserted on the **request**, not only on the
+  response. A stub that answers whatever the code asks stays green while the
+  request is being rejected by the real service; assert the body the code sends
+  against the field names the vendor documents.
 - **Do not merge jobs.** See I1.
 
 ---
 
 ## 6. When a check fires
 
-The checks in this repository have, so far, been right and the code wrong. Three
+The checks in this repository have, so far, been right and the code wrong. Four
 of them were load-bearing on the day they were written:
 
 - the containment gate rejected **every** grounded sentence, because the version
@@ -397,7 +422,11 @@ of them were load-bearing on the day they were written:
   step;
 - the config-surface check (I14) found, on first run, two names a workflow asked
   for that the table did not list, and one the code read that no workflow
-  delivered.
+  delivered;
+- the fact-grounding test, run over the typed-layer path, found the reason string
+  for the escalation band contained a word the gate reads as a package name —
+  which is the check catching prose, not a fact, and the reason the reason
+  strings are deliberately number-free and plain.
 
 All passed review. All were found by writing a test that asserted the intended
 behaviour rather than the implemented one. So:
