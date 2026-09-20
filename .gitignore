@@ -16,3 +16,7 @@ node_modules/
 .run/payload.json
 .run/prose.md
 .run/answer.md
+
+# Session metadata for the AI assistant that helped build this. Kept on disk,
+# deliberately not shipped: it is a working log, not part of the template.
+.workbuddy-ai/
