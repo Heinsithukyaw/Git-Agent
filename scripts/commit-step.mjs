@@ -76,6 +76,10 @@ async function main() {
   const decisions = readJsonIfExists(path.join(RUN_DIR, 'decisions.json')) ?? [];
   const prosePath = path.join(RUN_DIR, 'prose.md');
   const narration = fs.existsSync(prosePath) ? fs.readFileSync(prosePath, 'utf8') : null;
+  // What the narrate job recorded about the attempt, which is not derivable from
+  // the absence of `prose.md`: not configured, configured and broken, and
+  // nothing to narrate all look the same from here.
+  const narrationStatus = readJsonIfExists(path.join(RUN_DIR, 'narration.json'));
 
   // ---- 1. the gate -------------------------------------------------------
   const gated = { checked: null, narration: false };
@@ -108,12 +112,18 @@ async function main() {
   console.log(`${decisions.length} decision row(s), ${events.length} transition(s)`);
 
   const narrateResult = process.env.NARRATE_RESULT ?? 'skipped';
+  // A narration that was configured and failed is a degradation, not a success.
+  // It is not a *failure* either: the digest is correct and complete without it.
+  // That is exactly the distinction this vocabulary already had — the job result
+  // could not express it, because `narrate-step` deliberately exits 0 rather than
+  // failing the run over a missing paragraph.
+  const narrationBroke = Boolean(narrationStatus?.configured && !narrationStatus.ok);
   const status =
-    narrateResult === 'failure' || (payload.errors ?? []).length > 0
-      ? narrateResult === 'failure'
-        ? 'failed'
-        : 'degraded'
-      : 'ok';
+    narrateResult === 'failure'
+      ? 'failed'
+      : narrationBroke || (payload.errors ?? []).length > 0
+        ? 'degraded'
+        : 'ok';
 
   appendRun(RUNS, {
     run_id: process.env.GITHUB_RUN_ID ?? null,
@@ -121,6 +131,16 @@ async function main() {
     observed_at: observed,
     status,
     narration: gated.narration,
+    // Additive: `narration` above stays the boolean "was prose committed", which
+    // is what the chain already records. This is the *why*.
+    narration_status: narrationStatus
+      ? {
+          configured: Boolean(narrationStatus.configured),
+          ok: Boolean(narrationStatus.ok),
+          kind: narrationStatus.kind ?? null,
+          status: narrationStatus.status ?? null,
+        }
+      : null,
     counts: {
       decisions: decisions.length,
       act: decisions.filter((d) => d.decision === 'act').length,
@@ -136,7 +156,7 @@ async function main() {
   // ---- 3. surfaces -------------------------------------------------------
   const heartbeat = bumpHeartbeat(status);
   const commands = readRows('history/commands.jsonl').slice(-10);
-  const digest = renderDigest({ payload, decisions, narration, commands });
+  const digest = renderDigest({ payload, decisions, narration, narrationStatus, commands });
   const digestPath = path.join('digest', `${observed.slice(0, 10)}.md`);
   writeIfChanged(digestPath, digest);
 

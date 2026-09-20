@@ -247,11 +247,38 @@ way.
 verified; "dev help" is not. Rendering them in the same visual style destroys the
 property I2 exists to buy.
 
-### I11 — Honesty about time
+### I11 — Honesty about time, and about what is missing
 
 Scheduled workflows are delayed under load and may be dropped. So a digest is
 stamped with the **observation time**, never with the schedule. "As of 06:12 UTC"
 is honest; "today's briefing" is a small lie that will eventually be caught.
+
+The same rule applies to absence. **A component that produced nothing must say
+why it produced nothing**, because "absent" is otherwise indistinguishable from
+"deliberately not configured" — and the second is a supported mode, so the
+reader has no reason to investigate. A failed *source* is already rendered in the
+digest's gaps section. A failed *narration* was not, and the hole was total: the
+digest, the README region, the run record and the heartbeat all read exactly as
+they would on an instance that was never given a model key. A wrong key, a
+revoked key, a blocked network and an exhausted budget were one silent state,
+indefinitely, on a schedule nobody watches.
+
+- **Enforced by:** `scripts/narrate-step.mjs` writes `.run/narration.json` on
+  every exit path; `lib/render.mjs` renders it into the gaps section; the run
+  record carries `narration_status`. Tested in `tests/render.test.mjs`.
+- **The distinction is the whole point.** `configured: false` is not a gap and
+  must not grow one — a keyless instance is a complete instance. Only
+  `configured: true, ok: false` is a gap.
+- **What travels is the status, never the body.** The endpoint's response text is
+  not ours to publish and the digest is committed. `lib/llm.mjs` →
+  `classifyFailure()` reduces a failure to a status code and a coarse kind.
+- **A degradation is not a failure.** The run is `degraded`, not `failed`: the
+  digest is correct and complete without the prose. `narrate-step` still exits 0.
+  But it is no longer `ok`, and that is what `consecutive_failures` and the Pages
+  status line now reflect.
+- **Why it erodes:** a caught-and-warned error feels handled. The warning goes to
+  a workflow log that nobody reads on a green run, and the artifact it *should*
+  have written is the one thing missing.
 
 ### I12 — Third-party actions are pinned to a commit
 

@@ -68,6 +68,66 @@ test('a failed source is rendered, not hidden', () => {
   assert.match(md, /HTTP 503/);
 });
 
+test('a narration that was configured and failed is rendered, not hidden', () => {
+  // The defect this closes, found by pointing the pipeline at a live endpoint
+  // that refused it. `narrate-step` catches the error and exits 0 so the run is
+  // not failed over a missing paragraph — correct — but nothing recorded *why*
+  // the paragraph was missing. So the digest, the README, the run record and the
+  // heartbeat all read exactly as they would on an instance that was never given
+  // a model key. A wrong key was indistinguishable from a deliberate no-key
+  // configuration, indefinitely, on a daily cron nobody reads.
+  const md = renderDigest({
+    payload: payload(),
+    decisions,
+    narrationStatus: { configured: true, ok: false, kind: 'http', status: 401 },
+  });
+  assert.match(md, /## Gaps in this run/, 'the gap section must appear even with no source errors');
+  assert.match(md, /`narration`/);
+  assert.match(md, /HTTP 401/, 'the status is the diagnosis');
+  assert.match(md, /deterministic one/, 'and the reader is told the digest above is still complete');
+});
+
+test('an unconfigured narration is not a gap, and an empty errors list alone is not one either', () => {
+  // The other half of the distinction. A keyless instance is a supported mode,
+  // not a degradation — it must not grow a warning just for being keyless.
+  const keyless = renderDigest({
+    payload: payload(),
+    decisions,
+    narrationStatus: { configured: false, ok: false, kind: 'not-configured', status: null },
+  });
+  assert.doesNotMatch(keyless, /## Gaps in this run/);
+
+  const absent = renderDigest({ payload: payload(), decisions });
+  assert.doesNotMatch(absent, /## Gaps in this run/, 'no record at all is also not a gap');
+});
+
+test('every narration failure kind says something specific, and none quotes the endpoint', () => {
+  const kinds = [
+    { kind: 'http', status: 401, expect: /HTTP 401/ },
+    { kind: 'timeout', status: null, expect: /did not answer in time/ },
+    { kind: 'budget', status: null, expect: /LLM_TOKEN_BUDGET/ },
+    { kind: 'network', status: null, expect: /could not be reached/ },
+    { kind: 'nothing-to-narrate', status: null, expect: /nothing to narrate/ },
+  ];
+  for (const c of kinds) {
+    const md = renderDigest({
+      payload: payload(),
+      decisions,
+      narrationStatus: { configured: true, ok: false, kind: c.kind, status: c.status },
+    });
+    assert.match(md, c.expect, `${c.kind} must be described specifically`);
+  }
+
+  // The endpoint's own body is never reproduced: it is not ours, and this file
+  // is committed to a repository that may be public.
+  const md = renderDigest({
+    payload: payload(),
+    decisions,
+    narrationStatus: { configured: true, ok: false, kind: 'http', status: 401, error: 'unauthorized client detected, contact support' },
+  });
+  assert.doesNotMatch(md, /unauthorized client detected/);
+});
+
 test('severity renders as the score or the word the source published', () => {
   const md = renderDigest({
     payload: payload(),

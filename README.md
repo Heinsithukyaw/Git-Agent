@@ -54,7 +54,10 @@ and that is enforced by GitHub, not by discipline.
 
 4. **Optionally set one secret** — `LLM_API_KEY`. Without it, the agent still runs: the
    rules tier produces the whole digest and no model is contacted. That is a complete
-   product, not a degraded one.
+   product, not a degraded one. Set it and the endpoint refuses — wrong key, revoked
+   key, blocked network — and the digest says so, in its gaps section, every run.
+   "No prose" is a complete digest when nothing is configured and a broken one when
+   something is, so the two are never left looking the same.
 5. **Enable the schedule** — `digest.yml` runs daily at 06:17 UTC. Nothing else is
    required, and nothing is enabled by default that executes third-party code.
 
