@@ -112,6 +112,7 @@ jobs:
           JEV_ENABLED: ${{ vars.JEV_ENABLED }}
           JEV_API_KEY: ${{ secrets.JEV_API_KEY }}
           JEV_BASE_URL: ${{ vars.JEV_BASE_URL }}
+          JEV_MODEL: ${{ vars.JEV_MODEL }}
           AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
           PROBE_ENDPOINT: ${{ github.event.inputs.probe_endpoint || 'false' }}
 

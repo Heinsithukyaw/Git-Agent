@@ -27,6 +27,7 @@ import {
   checkPagesHoldNoKey,
   checkActionsPinned,
   checkAuthorGateMirrorsScript,
+  checkConfigSurface,
   runAll,
 } from '../lib/invariants.mjs';
 import { CI_ALLOWLIST } from '../lib/store.mjs';
@@ -487,6 +488,164 @@ test('the repository guards every issue_comment workflow with the script allowli
   const result = checkAuthorGateMirrorsScript(ROOT);
   assert.equal(result.ok, true, JSON.stringify(result.violations));
   assert.deepEqual(result.allowed, ['OWNER', 'MEMBER', 'COLLABORATOR']);
+});
+
+/* -------------------------------------------------- I14 config surface --- */
+
+/** A synthetic AGENTS.md carrying only the I8 table the check reads. */
+function agentsWithTable(names) {
+  return [
+    '### I8 — No provider names in the code',
+    '',
+    'Configuration surface, and nothing more:',
+    '',
+    '| Name | Kind | Value |',
+    '|---|---|---|',
+    ...names.map((n) => `| \`${n}\` | variable | a test value |`),
+    '',
+    '### I9 — The agent is fully useful with no model key',
+    '',
+  ].join('\n');
+}
+
+function envWorkflow(envLines) {
+  return [
+    'name: digest',
+    'on:',
+    '  schedule:',
+    "    - cron: '17 6 * * *'",
+    'jobs:',
+    '  narrate:',
+    '    steps:',
+    '      - run: node scripts/narrate-step.mjs',
+    '        env:',
+    ...envLines.map((l) => `          ${l}`),
+  ].join('\n');
+}
+
+function rulesOf(result) {
+  return result.violations.map((v) => v.rule ?? v.error).join('\n');
+}
+
+test('a workflow asking for a variable the table does not document is a violation', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_MODEL']),
+    '.github/workflows/digest.yml': envWorkflow([
+      'LLM_MODEL: ${{ vars.LLM_MODEL }}',
+      'LLM_TYPO: ${{ vars.LLM_TYPO }}',
+    ]),
+    'scripts/narrate-step.mjs': 'const m = process.env.LLM_MODEL;\n',
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /vars\.LLM_TYPO is not in the I8 configuration table/);
+});
+
+test('the regression that prompted this check — a documented knob wired nowhere — is caught', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['JEV_ENABLED', 'JEV_MODEL']),
+    '.github/workflows/digest.yml': envWorkflow(['JEV_ENABLED: ${{ vars.JEV_ENABLED }}']),
+    'scripts/narrate-step.mjs': 'const m = process.env.JEV_MODEL;\n',
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, false, 'the table documented a knob no workflow delivered');
+  assert.match(rulesOf(result), /JEV_MODEL is read by code but passed by no workflow/);
+});
+
+test('a name passed by a workflow but absent from the table is still a violation', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_MODEL']),
+    '.github/workflows/digest.yml': envWorkflow([
+      'LLM_MODEL: ${{ vars.LLM_MODEL }}',
+      'LLM_TIMEOUT: 30',
+    ]),
+    'lib/llm.mjs': 'const t = process.env.LLM_TIMEOUT;\n',
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /LLM_TIMEOUT is read by code but absent from the I8 configuration table/);
+  assert.doesNotMatch(rulesOf(result), /passed by no workflow/, 'it is passed — the table is what is missing');
+});
+
+test('a table and workflows that agree pass, and both sets are reported', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_API_KEY', 'LLM_BASE_URL']),
+    '.github/workflows/digest.yml': envWorkflow([
+      'LLM_API_KEY: ${{ secrets.LLM_API_KEY }}',
+      'LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}',
+    ]),
+    'lib/llm.mjs': 'const a = process.env.LLM_API_KEY;\nconst b = process.env.LLM_BASE_URL;\n',
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, true, rulesOf(result));
+  assert.deepEqual(result.documented, ['LLM_API_KEY', 'LLM_BASE_URL']);
+  assert.deepEqual(result.read, ['LLM_API_KEY', 'LLM_BASE_URL']);
+});
+
+test('the platform token is not part of the configuration surface', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_MODEL']),
+    '.github/workflows/commit.yml': envWorkflow(['GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}']),
+  });
+  assert.equal(
+    checkConfigSurface(root).ok,
+    true,
+    'the user cannot configure GITHUB_TOKEN, so demanding a table row for it would be noise',
+  );
+});
+
+test('step plumbing is not demanded as configuration', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_MODEL']),
+    '.github/workflows/digest.yml': envWorkflow([
+      'COMMENT_ID: ${{ github.event.comment.id }}',
+      'NARRATE_RESULT: ${{ needs.narrate.result }}',
+    ]),
+    'scripts/commit-step.mjs': 'const c = process.env.COMMENT_ID;\nconst n = process.env.NARRATE_RESULT;\n',
+  });
+  assert.equal(
+    checkConfigSurface(root).ok,
+    true,
+    'these are composed by the workflow, not configured by the user',
+  );
+});
+
+test('a name read through bracket access counts as read', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable(['LLM_MODEL']),
+    '.github/workflows/digest.yml': envWorkflow(['LLM_MODEL: ${{ vars.LLM_MODEL }}']),
+    'lib/llm.mjs': "const m = process.env['LLM_MODEL'];\n",
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, true, rulesOf(result));
+  assert.deepEqual(result.read, ['LLM_MODEL']);
+});
+
+test('a missing table anchor fails rather than passing vacuously', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': '### I8 — No provider names in the code\n\nnothing here\n',
+    '.github/workflows/digest.yml': envWorkflow(['LLM_MODEL: ${{ vars.LLM_MODEL }}']),
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].error, /anchor is missing/);
+});
+
+test('an empty table fails rather than passing vacuously', () => {
+  const root = syntheticRoot({
+    'AGENTS.md': agentsWithTable([]),
+    '.github/workflows/digest.yml': envWorkflow(['LLM_MODEL: ${{ vars.LLM_MODEL }}']),
+  });
+  const result = checkConfigSurface(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].error, /pass vacuously/);
+});
+
+test('the repository documents every variable its workflows ask for, and wires every one it documents', () => {
+  const result = checkConfigSurface(ROOT);
+  assert.equal(result.ok, true, rulesOf(result));
+  assert.ok(result.documented.includes('JEV_MODEL'), 'the knob this check was written for');
+  assert.ok(result.read.includes('JEV_MODEL'), 'and the code that reads it');
 });
 
 /* ---------------------------------------------------------- the real repo --- */

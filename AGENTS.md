@@ -153,11 +153,20 @@ Configuration surface, and nothing more:
 | `JEV_API_KEY` | secret, optional | only when `JEV_ENABLED` is true |
 | `LLM_BASE_URL` | variable | any OpenAI-compatible root |
 | `LLM_MODEL` | variable | model or deployment name |
+| `LLM_TOKEN_BUDGET` | variable | tokens per run, default `60000` |
 | `JEV_ENABLED` | variable | `false` (default) |
+| `JEV_BASE_URL` | variable | the typed layer's root; only when `JEV_ENABLED` is true |
+| `JEV_MODEL` | variable | model or deployment name for the typed layer |
 | `SANDBOX_ENABLED` | variable | `false` (default) |
 | `AGENT_LANG` | variable | reply language, default `en` |
 
 - **Enforced by:** `lib/invariants.mjs` → `checkNoVendorNames()`.
+- **Enforced by:** `lib/invariants.mjs` → `checkConfigSurface()` (I14), which
+  asserts this table and the workflows agree in both directions. Measured against
+  the tree as it stood: two names were read by a workflow and absent from the
+  table (`JEV_BASE_URL`, `LLM_TOKEN_BUDGET`), and one was read by the code and
+  delivered by no workflow (`JEV_MODEL`). "And nothing more" is exactly the kind
+  of claim that needs a check rather than a promise.
 
 ### I9 — The agent is fully useful with no model key
 
@@ -237,6 +246,38 @@ Two details that are load-bearing and were both found by writing the check:
 - **Enforced by:** `lib/invariants.mjs` → `checkAuthorGateMirrorsScript()`.
 - **Not a substitute for I6.** The `if:` filters an *event*; the script checks a
   *value*. The script still exits, and must keep exiting.
+
+### I14 — The configuration surface agrees with its documentation, both ways
+
+The table under I8 says "and nothing more". That is a claim about two files at
+once, and it had already drifted in both directions before this check existed:
+
+- **workflow → table.** `digest.yml` read `vars.JEV_BASE_URL`; the table did not
+  list it. A user reading the table could not have known to set it, and the
+  typed layer would have fallen back to the rules tier with no explanation.
+- **code → workflow.** `scripts/narrate-step.mjs` read `JEV_MODEL`; no workflow
+  passed it. The table documented a knob that did not exist at runtime — the
+  quietest possible failure, because nothing errors when an unset variable is
+  read.
+
+Neither is visible by reading either file alone. So:
+
+- every `vars.*` / `secrets.*` a workflow references appears in the I8 table;
+- every `LLM_*` / `JEV_*` name the code reads is passed by some workflow **and**
+  appears in the table.
+
+The second direction is scoped to those two prefixes on purpose. Everything else
+a step reads — `COMMENT_ID`, `NARRATE_RESULT`, `PROBE_ENDPOINT` — is plumbing the
+workflow composes out of `needs.*` and `github.*`. Demanding a table row for each
+would be noise, and a noisy check is a disabled check.
+
+`secrets.GITHUB_TOKEN` is excluded, for the reason I1 excludes it: the platform
+supplies it, the user cannot configure it, and it is not a row.
+
+- **Enforced by:** `lib/invariants.mjs` → `checkConfigSurface()`.
+- **Fails loudly, never vacuously.** If the table anchor is missing, or the table
+  parses to zero rows, the check fails rather than reporting success over an
+  empty set.
 
 ---
 
@@ -332,6 +373,10 @@ node scripts/fetch-step.mjs && node scripts/narrate-step.mjs && \
   (I3), and must not move the gate out of the keyless job (I2).
 - **A new action** must be pinned to a 40-hex commit with the release in a
   trailing comment (I12). `checkActionsPinned()` will refuse a tag.
+- **A new configuration variable** goes in the I8 table in this file, then in the
+  `env:` of every workflow that needs it (I14). The table is the source, not the
+  afterthought — `checkConfigSurface()` reads it and will fail either half if you
+  do one and not the other.
 - **A new rule** is not a rule until `lib/invariants.mjs` checks it and
   `tests/invariants.test.mjs` proves the check fires. A check that has never been
   seen to fail is a check nobody can trust — write the synthetic case that breaks
@@ -342,16 +387,19 @@ node scripts/fetch-step.mjs && node scripts/narrate-step.mjs && \
 
 ## 6. When a check fires
 
-The checks in this repository have, so far, been right and the code wrong. Two of
-them were load-bearing on the day they were written:
+The checks in this repository have, so far, been right and the code wrong. Three
+of them were load-bearing on the day they were written:
 
 - the containment gate rejected **every** grounded sentence, because the version
   and advisory-id extractors read version literals as package names;
 - the one-privilege-per-job check was **not enforcing anything**, because the
   YAML reader popped its own sequence frame and could not see `secrets.` inside a
-  step.
+  step;
+- the config-surface check (I14) found, on first run, two names a workflow asked
+  for that the table did not list, and one the code read that no workflow
+  delivered.
 
-Both passed review. Both were found by writing a test that asserted the intended
+All passed review. All were found by writing a test that asserted the intended
 behaviour rather than the implemented one. So:
 
 **When a check fires, the first hypothesis is that the check is right.** Read the

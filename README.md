@@ -229,6 +229,9 @@ rule at all. The short version:
   content, not a fact about the world.
 - **The sandbox never receives a secret**, and ships off by default.
 - **No provider names in the code.** The agent has no opinion about your endpoint.
+- **The documented configuration surface is the whole configuration surface.** Every
+  variable a workflow asks for is in the table, and every variable the code reads is
+  delivered by a workflow. Both halves are checked, because both had already drifted.
 - **Commands are parsed, never interpreted.** An allowlisted verb, an argument that must
   appear in the watch list, and an author gate that exits rather than warns. The cheap
   workflow-level guard names exactly the same three associations as the real gate, so it

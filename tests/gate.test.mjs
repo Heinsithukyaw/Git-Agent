@@ -20,6 +20,8 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { check, extract, indexPayload, assertGrounded } from '../lib/gate.mjs';
+import { triage } from '../lib/triage.mjs';
+import { buildFacts } from '../lib/render.mjs';
 
 const PAYLOAD = {
   observed_at: '2026-01-01T00:00:00.000Z',
@@ -163,4 +165,138 @@ test('the checked counts are reported, so a silent empty extract is visible', ()
   assert.equal(result.checked.advisories, 1);
   assert.ok(result.checked.packages >= 1);
   assert.equal(result.checked.versions, 1);
+});
+
+/* ------------------------------------------ the narrator's input contract --- */
+
+/**
+ * Everything `buildFacts()` hands the narrator must be passable by the gate.
+ *
+ * The narrator is asked to write prose *from these strings*, and its output is
+ * then checked against the payload. So a fact containing a number the payload
+ * does not is a trap with only two exits: the narrator omits it and loses
+ * information, or it repeats it and the whole narration is rejected. The fact
+ * list is the gate's input contract, and it is worth asserting directly.
+ *
+ * This is the class-level version of a bug that was live. The typed layer wrote
+ * `scored 0.72 ≥ τ 0.6` into its reason, `buildFacts` passed that reason
+ * through verbatim, and the gate then rejected any sentence repeating the score
+ * — correctly, because a threshold crossing is arithmetic over model output, not
+ * a fact about the world. The layer ships off by default, so nothing had caught
+ * it.
+ */
+
+const UNCERTAIN_PAYLOAD = {
+  observed_at: '2026-01-01T00:00:00.000Z',
+  packages: [
+    // No imported symbols, so the rules cannot judge reachability and the case
+    // reaches the typed layer — which is the only path that matters here.
+    { name: 'lodash', ecosystem: 'npm', pinned: '4.17.15', usage: {} },
+  ],
+  advisories: [
+    {
+      id: 'GHSA-35jh-r3h4-6jhm',
+      package: 'lodash',
+      ecosystem: 'npm',
+      summary: 'prototype pollution',
+      details: 'The merge helper does not guard against prototype pollution.',
+      severity: '7.4',
+      affected: [{ type: 'ECOSYSTEM', introduced: '0', fixed: '4.17.21' }],
+    },
+  ],
+  releases: [],
+  feeds: [],
+  errors: [],
+};
+
+/** Run triage with `fetch` stubbed to a canned typed-layer response. */
+async function triageWithTyped(answers) {
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({
+    ok: true,
+    status: 200,
+    json: async () => ({ answers, model_version: 'stub-2026-01-01' }),
+  });
+  try {
+    return await triage(UNCERTAIN_PAYLOAD, {
+      typed: { enabled: true, baseUrl: 'https://endpoint.invalid/v1', apiKey: 'k', model: 'stub' },
+    });
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+}
+
+/** The same `derived` list commit-step.mjs passes, so this mirrors production. */
+function derivedFor(payload, decisions) {
+  return [
+    decisions.length,
+    decisions.filter((d) => d.decision === 'act').length,
+    decisions.filter((d) => d.decision === 'uncertain').length,
+    (payload.packages ?? []).length,
+    (payload.advisories ?? []).length,
+    (payload.releases ?? []).length,
+    (payload.errors ?? []).length,
+  ];
+}
+
+function assertEveryFactIsGroundable(payload, decisions, label) {
+  const facts = buildFacts(payload, decisions);
+  assert.ok(facts.length > 0, `${label}: no facts were produced, so this proves nothing`);
+  const derived = derivedFor(payload, decisions);
+  for (const fact of facts) {
+    try {
+      assertGrounded(fact, payload, { derived });
+    } catch (err) {
+      assert.fail(`${label}: the narrator was handed an ungroundable fact\n  ${fact}\n  ${err.message}`);
+    }
+  }
+  return facts;
+}
+
+test('every fact the narrator receives is one the gate can accept — rules path', async () => {
+  const decisions = await triage(UNCERTAIN_PAYLOAD, { typed: { enabled: false } });
+  assertEveryFactIsGroundable(UNCERTAIN_PAYLOAD, decisions, 'rules only');
+});
+
+test('every fact the narrator receives is one the gate can accept — typed layer decided', async () => {
+  const decisions = await triageWithTyped({
+    we_use_the_vulnerable_component: { noul: 1, confidence: 0.9 },
+    reaches_a_trust_boundary: { noul: 1, confidence: 0.8 },
+  });
+  assert.equal(decisions[0].layer, 'typed', 'the stub should have moved an uncertain case');
+  assert.equal(decisions[0].decision, 'act');
+  const facts = assertEveryFactIsGroundable(UNCERTAIN_PAYLOAD, decisions, 'typed layer, above tau');
+  assert.match(facts.join('\n'), /judged this reachable/);
+});
+
+test('every fact the narrator receives is one the gate can accept — typed layer below the floor', async () => {
+  const decisions = await triageWithTyped({
+    we_use_the_vulnerable_component: { noul: 1, confidence: 0.1 },
+    reaches_a_trust_boundary: { noul: 1, confidence: 0.2 },
+  });
+  assert.equal(decisions[0].decision, 'uncertain', 'below the floor, nothing is decided');
+  const facts = assertEveryFactIsGroundable(UNCERTAIN_PAYLOAD, decisions, 'typed layer, below floor');
+  assert.match(facts.join('\n'), /below the confidence floor/);
+});
+
+test('the typed layer records its numbers structurally, not in the prose', async () => {
+  const decisions = await triageWithTyped({
+    we_use_the_vulnerable_component: { noul: 1, confidence: 0.9 },
+    reaches_a_trust_boundary: { noul: 1, confidence: 0.8 },
+  });
+  const row = decisions[0];
+  assert.equal(typeof row.typed.score, 'number', 'the score must be recorded, not discarded');
+  assert.equal(row.tau, 0.6, 'tau is recorded on the row');
+  assert.equal(row.typed.confidence, 0.8, 'confidence is the min of the two answers');
+  assert.doesNotMatch(row.reason, /\d/, 'a number in the reason is a sentence the gate must reject');
+});
+
+test('the wording this replaced is still rejected, so the fix is not cosmetic', () => {
+  const old = 'GHSA-35jh-r3h4-6jhm affects lodash pinned at 4.17.15; decision act because typed layer scored 0.72 ≥ τ 0.6 — treat as reachable';
+  const result = check(old, UNCERTAIN_PAYLOAD, { derived: [1, 1, 0, 1, 1, 0, 0] });
+  assert.equal(result.ok, false, 'the pre-fix reason must still fail the gate — that is why it changed');
+  assert.ok(
+    result.violations.some((v) => v.token === '0.72' || v.token === '0.6'),
+    `expected the score or tau to be the offending entity, saw ${JSON.stringify(result.violations.map((v) => v.token))}`,
+  );
 });
