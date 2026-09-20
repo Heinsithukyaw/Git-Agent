@@ -28,6 +28,7 @@ import {
   COLLECTOR_ALLOWLIST,
 } from '../lib/store.mjs';
 import { assertGrounded } from '../lib/gate.mjs';
+import { probeRecordForCommit } from '../lib/probe.mjs';
 import {
   renderDigest,
   renderReadmeSection,
@@ -75,13 +76,48 @@ function bumpHeartbeat(status) {
 async function main() {
   const payload = readJsonIfExists(path.join(RUN_DIR, 'payload.json'));
   if (!payload) throw new Error('payload artifact is missing');
-  const decisions = readJsonIfExists(path.join(RUN_DIR, 'decisions.json')) ?? [];
+
+  // Present is not the same as empty, and the difference is a whole failure
+  // route. `decisions.json` is written by the triage stage in the narrate job
+  // and reaches this job as an artifact, so its absence means the stage did not
+  // deliver — not that it found nothing. Reading absence as `[]` is how a broken
+  // pipeline published "0 to act on" and still reported `ok`.
+  const decisionsPath = path.join(RUN_DIR, 'decisions.json');
+  const decisionsDelivered = fs.existsSync(decisionsPath);
+  const decisions = decisionsDelivered ? JSON.parse(fs.readFileSync(decisionsPath, 'utf8')) : [];
+
   const prosePath = path.join(RUN_DIR, 'prose.md');
   const narration = fs.existsSync(prosePath) ? fs.readFileSync(prosePath, 'utf8') : null;
   // What the narrate job recorded about the attempt, which is not derivable from
   // the absence of `prose.md`: not configured, configured and broken, and
   // nothing to narrate all look the same from here.
+  //
+  // Read from the artifact, never from `needs.narrate.result`. That job carries
+  // `continue-on-error: true`, so the platform reports `success` for a job that
+  // died from an exception — a signal that reads as authoritative and is not.
+  // `narrate-step` writes this file on every path, including a top-level
+  // `catch`, which is what makes its presence trustworthy. See
+  // `narrate-step.mjs` → `recordNarration()`.
   const narrationStatus = readJsonIfExists(path.join(RUN_DIR, 'narration.json'));
+
+  // The narrate stage's output is the substance of the digest, and every count
+  // in it is arithmetic over the decision set. With no set, the digest would
+  // publish "0 to act on" for a question nobody answered — in a security
+  // product, the worst available failure mode, and one this repository has
+  // already shipped once. So this takes the same route as a failed gate:
+  // nothing is written except the heartbeat, which is the one file that must
+  // always move (I4), or a broken agent goes silent and GitHub disables the
+  // schedule after 60 days. The `heartbeat` job in `digest.yml` commits it.
+  if (!decisionsDelivered || narrationStatus === null) {
+    const missing = [
+      decisionsDelivered ? null : '.run/decisions.json',
+      narrationStatus === null ? '.run/narration.json' : null,
+    ].filter(Boolean);
+    throw new Error(
+      `the narrate stage did not deliver its output (missing: ${missing.join(', ')}) — ` +
+        'nothing was published except the heartbeat',
+    );
+  }
 
   // ---- 1. the gate -------------------------------------------------------
   const gated = { checked: null, narration: false };
@@ -115,25 +151,21 @@ async function main() {
   for (const e of events) appendRow(EVENTS, e);
   console.log(`${decisions.length} decision row(s), ${events.length} transition(s)`);
 
-  const narrateResult = process.env.NARRATE_RESULT ?? 'skipped';
   // A narration that was configured and failed is a degradation, not a success.
   // It is not a *failure* either: the digest is correct and complete without it.
-  // That is exactly the distinction this vocabulary already had — the job result
-  // could not express it, because `narrate-step` deliberately exits 0 rather than
-  // failing the run over a missing paragraph.
-  //
   // The judgement is `narrationGap()` in the renderer, not a local one, because
   // the digest prints the same verdict. A narration that answered 200 and
   // produced nothing but a title is a gap, and if this job disagreed, the digest
   // would carry a gap section while the heartbeat and the published page said
   // `ok`. The run record and the document must not contradict each other.
+  //
+  // The job result is deliberately not consulted. It was, once:
+  // `NARRATE_RESULT === 'failure'` was the only route to `failed` and it was
+  // unreachable, because the narrate job carries `continue-on-error: true`. The
+  // signal is now the artifact, and the one case that *is* a failure — the stage
+  // delivering nothing at all — is handled above, before anything is written.
   const narrationIsGap = narrationGap({ narration, narrationStatus });
-  const status =
-    narrateResult === 'failure'
-      ? 'failed'
-      : narrationIsGap.gap || (payload.errors ?? []).length > 0
-        ? 'degraded'
-        : 'ok';
+  const status = narrationIsGap.gap || (payload.errors ?? []).length > 0 ? 'degraded' : 'ok';
 
   appendRun(RUNS, {
     run_id: process.env.GITHUB_RUN_ID ?? null,
@@ -176,8 +208,14 @@ async function main() {
 
   writeIfChanged(SUMMARY, renderSummary({ payload, decisions, heartbeat }));
 
+  // Projected, not copied. `data/endpoint.json` is committed and this repository
+  // may be public, so what lands here is an allowlist rather than whatever the
+  // probe returned — the same shape as the write allowlist (I3), and the half
+  // that is actually load-bearing. `checkNoEndpointDisclosure()` re-checks the
+  // committed file, which is what catches a regression in *this* projection
+  // (a field wrongly added to the allowlist) rather than in the probe.
   const endpoint = readJsonIfExists(path.join(RUN_DIR, 'endpoint.json'));
-  if (endpoint) writeIfChanged('data/endpoint.json', endpoint);
+  if (endpoint) writeIfChanged('data/endpoint.json', probeRecordForCommit(endpoint));
 
   // ---- 4. the heartbeat, always ------------------------------------------
   writeIfChanged(HEARTBEAT, heartbeat);

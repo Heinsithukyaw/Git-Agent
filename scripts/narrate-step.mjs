@@ -21,7 +21,7 @@ import path from 'node:path';
 import { triage } from '../lib/triage.mjs';
 import { buildFacts, attachDecisions } from '../lib/render.mjs';
 import { complete, isConfigured, narrationMessages, unfence, config, classifyFailure } from '../lib/llm.mjs';
-import { probe } from '../lib/probe.mjs';
+import { probe, probeRecordForCommit } from '../lib/probe.mjs';
 
 const RUN_DIR = '.run';
 const NARRATION = path.join(RUN_DIR, 'narration.json');
@@ -55,6 +55,18 @@ function warn(message) {
  * those are committed: the identity names the infrastructure, and this
  * repository's rule is that the endpoint is the user's business, not the
  * template's.
+ *
+ * **Written before anything that can throw, and again on every path after it.**
+ * The record's *presence* therefore means "this step ran", and its content means
+ * what happened — so the provisional `kind: 'started'` below is not a
+ * placeholder, it is the invariant. That matters across the job boundary:
+ * `commit-step` reads this file, and it cannot use the platform's own signal
+ * (`needs.narrate.result`) instead, because this job carries
+ * `continue-on-error: true` and a job that died from an exception still reports
+ * `success` to its consumers. Without the provisional write, a throw in
+ * `readPayload()` or `triage()` leaves no record at all, and a broken narration
+ * is byte-identical to a deliberately keyless instance — the one state this file
+ * exists to separate.
  */
 function recordNarration(record) {
   fs.writeFileSync(
@@ -71,6 +83,11 @@ function readPayload() {
 }
 
 async function main() {
+  // The provisional record, written before the first thing that can throw. Its
+  // presence is what tells `commit-step` that this step ran at all; every path
+  // below overwrites it. See `recordNarration()`.
+  recordNarration({ configured: null, ok: false, kind: 'started' });
+
   const payload = readPayload();
 
   const typedEnabled = String(process.env.JEV_ENABLED ?? 'false').toLowerCase() === 'true';
@@ -95,8 +112,23 @@ async function main() {
 
   if (String(process.env.PROBE_ENDPOINT ?? 'false').toLowerCase() === 'true') {
     const record = await probe(process.env);
-    fs.writeFileSync(path.join(RUN_DIR, 'endpoint.json'), JSON.stringify(record, null, 2), 'utf8');
-    console.log(`endpoint probe recorded for ${record.host ?? 'an unconfigured endpoint'}`);
+    // Projected before it is written: this file is uploaded as a workflow
+    // artifact, and artifacts are readable on a public repository. See
+    // `lib/probe.mjs`.
+    fs.writeFileSync(
+      path.join(RUN_DIR, 'endpoint.json'),
+      JSON.stringify(probeRecordForCommit(record), null, 2),
+      'utf8',
+    );
+    // The host is not printed and not recorded: this log is public on a public
+    // repository, and the endpoint is the user's business (I8). What is worth
+    // saying is whether anything was measured at all.
+    console.log(
+      record.configured
+        ? `endpoint probe recorded: ${Object.values(record.capabilities ?? {}).filter(Boolean).length} of ` +
+            `${Object.keys(record.capabilities ?? {}).length} capabilities confirmed`
+        : 'endpoint probe recorded for an unconfigured endpoint',
+    );
   }
 
   // Narration. Optional, and its absence is not an error — but "not configured"
@@ -126,7 +158,9 @@ async function main() {
     });
     const prose = unfence(text).trim();
     fs.writeFileSync(path.join(RUN_DIR, 'prose.md'), prose + '\n', 'utf8');
-    console.log(`narrated ${prose.length} chars (model ${model ?? 'unknown'}, ${usage?.total_tokens ?? '?'} tokens)`);
+    // The model name is recorded in the artifact, which is not committed, and
+    // deliberately not printed here, which is. Same reason as the host above.
+    console.log(`narrated ${prose.length} chars (${usage?.total_tokens ?? '?'} tokens)`);
     recordNarration({
       configured: true,
       ok: true,
@@ -140,11 +174,20 @@ async function main() {
     // A narration failure must not fail the run. The digest is the product;
     // the prose is a layer on top of it. But it must not vanish either: the
     // record below is what makes it visible in the digest the user reads.
-    warn(`narration failed (${err.message}) — proceeding without it`);
+    //
+    // The warning names the status, never the message. A gateway's 401 body
+    // names the provider and can run to 400 characters, and this log is public
+    // on a public repository — the same reduction the artifact carries, for the
+    // same reason. See `classifyFailure()`.
+    const classified = classifyFailure(err);
+    warn(
+      `narration failed (${classified.status ? `HTTP ${classified.status}` : classified.kind}) — ` +
+        'proceeding without it',
+    );
     recordNarration({
       configured: true,
       ok: false,
-      ...classifyFailure(err),
+      ...classified,
       model: config(process.env).model || null,
       user_agent: config(process.env).userAgent || null,
     });
@@ -152,6 +195,35 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`::error::${err.message ?? String(err)}`);
+  // The step threw, so nothing below the throw ran and no later record was
+  // written. Record the crash here: this artifact is the only thing that crosses
+  // the job boundary, and `needs.narrate.result` cannot stand in for it — the job
+  // carries `continue-on-error: true`, which reports `success` for a job that
+  // died. See `recordNarration()`.
+  const classified = classifyFailure(err);
+  try {
+    recordNarration({
+      configured: isConfigured(process.env),
+      ok: false,
+      kind: 'crashed',
+      status: classified.status ?? null,
+      // The error's *name*, never its message. A message can embed the
+      // endpoint's response body — `triage.mjs` throws one that does — and this
+      // artifact is committed.
+      detail: err?.name ?? null,
+    });
+  } catch {
+    // Best effort. If even the record cannot be written the run still fails
+    // loudly below, which is the correct direction to fail in.
+  }
+  // The same reasoning applies to this line, which a public workflow log keeps
+  // forever. An error carrying an HTTP status is an endpoint response and only
+  // its status is printed; anything else is this repository's own error and its
+  // message is the whole diagnosis.
+  console.error(
+    classified.status
+      ? `::error::${err?.name ?? 'Error'}: the endpoint answered HTTP ${classified.status}`
+      : `::error::${err?.message ?? String(err)}`,
+  );
   process.exit(1);
 });

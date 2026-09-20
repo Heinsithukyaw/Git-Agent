@@ -24,6 +24,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import http from 'node:http';
 import {
   DECISIONS,
   TAU_DEFAULT,
@@ -35,6 +36,7 @@ import {
   severityLabel,
   triage,
   typedDecide,
+  reduceTypedError,
 } from '../lib/triage.mjs';
 
 const pkg = (over = {}) => ({
@@ -700,4 +702,63 @@ test('an advisory whose package is not in the payload is uncertain, not dropped'
   assert.equal(rows.length, 1);
   assert.equal(rows[0].decision, DECISIONS.UNCERTAIN);
   assert.equal(rows[0].pinned, null);
+});
+
+test('a typed-layer failure is recorded as a status, never as the response body', () => {
+  // The row this lands in is `data/triage.jsonl` — committed, and append-only by
+  // design (I5), so a body written there can never be taken back. The thrown
+  // message still carries the detail, for a caller that wants to print it; what
+  // must not happen is committing it.
+  const body = 'invalid field "packages[3].range": expected a string, got null';
+  assert.equal(reduceTypedError(new Error(`typed layer returned HTTP 422: ${body}`)), 'http 422');
+  assert.doesNotMatch(
+    reduceTypedError(new Error(`typed layer returned HTTP 422: ${body}`)),
+    /packages/,
+    'the field detail stays out of the record',
+  );
+  assert.equal(reduceTypedError(new Error('typed layer timed out after 10000ms')), 'timeout');
+  assert.equal(reduceTypedError(new Error('fetch failed')), 'network');
+  assert.equal(reduceTypedError('something odd'), 'network', 'and it never throws on a non-Error');
+});
+
+test('the call site records the status, not the body — the reducer is not enough', async () => {
+  // Deliberately at the call site rather than on `reduceTypedError`. A unit test
+  // on the reducer passes whatever the caller does with its result, and the
+  // caller is where the body used to travel. The endpoint is a real local server
+  // for the same reason: the body has to actually arrive before "it was not
+  // recorded" means anything.
+  const marker = 'SECRET-FIELD-DETAIL';
+  const server = http.createServer((req, res) => {
+    res.writeHead(422, { 'content-type': 'application/json' });
+    res.end(JSON.stringify({ error: `invalid field "packages[3].range": ${marker}` }));
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
+
+  try {
+    const payload = {
+      observed_at: '2026-01-01T00:00:00.000Z',
+      // Two conditions, and both matter. `pinned: null` makes the rules tier
+      // decline (`usage: {}` would too, but an unmapped usage also leaves nothing
+      // answerable, and `typedDecide` correctly sends no request at all — so the
+      // body would never arrive and the test would pass for the wrong reason).
+      packages: [pkg({ pinned: null })],
+      advisories: [advisory()],
+    };
+    const rows = await triage(payload, {
+      typed: {
+        enabled: true,
+        baseUrl: `http://127.0.0.1:${server.address().port}/v1`,
+        apiKey: 'sk-test-not-a-real-key',
+        model: 'jev-latest',
+      },
+    });
+
+    const row = rows.find((r) => r.advisory_id === 'GHSA-35jh-r3h4-6jhm');
+    assert.ok(row, 'a typed-layer failure is not a dropped advisory');
+    assert.equal(row.typed_error, 'http 422', 'the status is the diagnosis');
+    assert.doesNotMatch(JSON.stringify(row), new RegExp(marker), 'and the body is not committed');
+    assert.equal(row.decision, DECISIONS.UNCERTAIN, 'the rules tier declined, and nothing invented a verdict');
+  } finally {
+    await new Promise((resolve) => server.close(resolve));
+  }
 });

@@ -10,6 +10,7 @@
   "scripts": {
     "test": "node --test \"tests/*.test.mjs\"",
     "check": "node tools/check-invariants.mjs",
+    "audit:public": "node tools/check-public-safety.mjs",
     "probe": "node scripts/probe-step.mjs",
     "fetch": "node scripts/fetch-step.mjs",
     "narrate": "node scripts/narrate-step.mjs",

@@ -211,12 +211,52 @@ test('a refused call records the status and the identity, never the response bod
     assert.equal(record.status, 401, 'the status is the diagnosis');
     assert.equal(record.user_agent, 'some-tool/1.2.3', 'and the identity is what separates the two causes');
 
-    // The body is not ours and this artifact is uploaded from a repository that
-    // may be public. It reaches the workflow log through the warning and stops
-    // there.
+    // The body is not ours, and both surfaces are public: the artifact travels as
+    // a workflow artifact, and the log is readable on a public repository. Neither
+    // carries it — the reduction is a status and a coarse kind, applied to the
+    // record and to the warning line alike.
     assert.doesNotMatch(JSON.stringify(record), /unauthorized client detected/);
     assert.doesNotMatch(JSON.stringify(record), /example\.invalid/);
+    assert.match(result.stderr, /narration failed \(HTTP 401\)/, 'the log says what happened');
+    assert.doesNotMatch(result.stderr, /unauthorized client detected/, 'and not what the endpoint said');
+    assert.doesNotMatch(result.stderr, /example\.invalid/);
   } finally {
     await server.close();
   }
+});
+
+test('a crash is recorded, not swallowed — the artifact is the only signal', () => {
+  // `needs.narrate.result` is `success` under `continue-on-error: true`, so a
+  // step that throws cannot be seen from the job graph. What can be seen is this
+  // record, and it has to survive the throw: without it, a broken narrate job
+  // would reach `commit-step` as "no record", which is the state a deliberately
+  // keyless instance produces.
+  const dir = sandbox();
+  fs.writeFileSync(path.join(dir, '.run/payload.json'), '{ not json at all', 'utf8');
+
+  return run(dir, {}).then((result) => {
+    assert.equal(result.status, 1, 'the step fails loudly');
+    const record = read(dir, '.run/narration.json');
+    assert.equal(record.ok, false);
+    assert.equal(record.kind, 'crashed');
+    assert.equal(record.detail, 'SyntaxError', 'the error kind, never its message');
+    assert.doesNotMatch(result.stderr, /not json at all/, 'and the log does not quote the input either');
+  });
+});
+
+test('the record is written before anything that can throw', () => {
+  // A structural assertion, and it is structural because it has to be. The case
+  // it covers — the process being killed between the decision write and the
+  // narration record — is one no local run can reach. What *is* observable is the
+  // ordering in the source, and the ordering is the guarantee: `narration.json`
+  // exists whenever this step ran at all, which is what lets `commit-step` read
+  // its absence as "the step did not run" instead of as "no model configured".
+  // Without it, "absent" would be ambiguous, and `narrationGap()` would resolve
+  // that ambiguity in the direction I11 exists to prevent.
+  const source = fs.readFileSync(SCRIPT, 'utf8');
+  const provisional = source.indexOf("recordNarration({ configured: null, ok: false, kind: 'started' })");
+  const firstThrow = source.indexOf('= readPayload()');
+  assert.ok(provisional > 0, 'the provisional record is present');
+  assert.ok(firstThrow > 0, 'and the first thing that can throw is where we think it is');
+  assert.ok(provisional < firstThrow, 'written before it, which is the whole of its value');
 });

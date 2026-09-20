@@ -162,6 +162,7 @@ function summaryOf(check) {
   if (check.rows !== undefined) return `${check.rows} row(s), chain intact`;
   if (check.pins !== undefined) return `${check.pins.length} action(s) pinned to a commit`;
   if (check.allowed !== undefined) return `allowlist ${check.allowed.join(' / ')}`;
+  if (check.checked !== undefined) return `${check.checked} cross-job file(s) carried by an upload`;
   if (check.documented !== undefined) {
     return `${check.documented.length} name(s) documented, ${check.read.length} read by code`;
   }

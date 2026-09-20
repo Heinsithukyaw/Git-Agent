@@ -187,6 +187,42 @@ test('narrationGap is the one verdict, shared by the digest and the run record',
     false,
     'no narration and no record is a keyless instance — a supported mode, not a gap',
   );
+
+  // The crash path, which arrives as a *record* rather than as an exception. The
+  // provisional record carries `configured: null` because `narrate-step` writes
+  // it before it can read its own configuration, so the predicate is stated as
+  // "not `false`" rather than "is `true`" — a record that never got far enough to
+  // say what happened must not pass as a keyless instance.
+  const crashed = { configured: true, ok: false, kind: 'crashed', status: null, detail: 'Error' };
+  const started = { configured: null, ok: false, kind: 'started' };
+  assert.equal(narrationGap({ narrationStatus: crashed }).gap, true);
+  assert.equal(narrationGap({ narrationStatus: crashed }).kind, 'crashed');
+  assert.equal(
+    narrationGap({ narrationStatus: started }).gap,
+    true,
+    'the provisional record means the step began and never finished',
+  );
+  assert.equal(
+    narrationGap({ narrationStatus: { configured: false, ok: false, kind: 'not-configured' } }).gap,
+    false,
+    'and the one un-successful record that is not a gap stays that way (I9)',
+  );
+});
+
+test('the digest prints the command, never the login of the person who sent it', () => {
+  // The digest is published twice over — committed, and rendered on Pages — and a
+  // login belongs to a person rather than to the repository. The actor stays in
+  // `history/commands.jsonl`, which is the audit trail and the one place the
+  // question "who asked for this?" has to stay answerable; the digest only has to
+  // say what was asked.
+  const md = renderDigest({
+    payload: payload(),
+    decisions,
+    commands: [{ verb: 'why', arg: 'express', outcome: 'answered', author: 'some-collaborator' }],
+  });
+  assert.match(md, /`\/agent why express`/, 'the command is the part worth printing');
+  assert.match(md, /answered/);
+  assert.doesNotMatch(md, /some-collaborator/, 'and the login is not');
 });
 
 test('narrationBody is the outline rule, stated once', () => {

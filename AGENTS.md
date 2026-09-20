@@ -347,11 +347,28 @@ revoked key, a blocked network and an exhausted budget were one silent state,
 indefinitely, on a schedule nobody watches.
 
 - **Enforced by:** `scripts/narrate-step.mjs` writes `.run/narration.json` on
-  every exit path; `lib/render.mjs` renders it into the gaps section; the run
-  record carries `narration_status`. Tested in `tests/render.test.mjs`.
+  every exit path — a provisional record *before* the first thing that can throw,
+  and a crash record in its top-level `catch`; `lib/render.mjs` renders it into
+  the gaps section; the run record carries `narration_status`. Tested in
+  `tests/render.test.mjs`.
 - **The distinction is the whole point.** `configured: false` is not a gap and
-  must not grow one — a keyless instance is a complete instance. Only
-  `configured: true, ok: false` is a gap.
+  must not grow one — a keyless instance is a complete instance. Every other
+  un-successful record is one, including `configured: null`: that is the
+  provisional record, and it means the step began and never got far enough to say
+  what happened. The predicate is written as "not `false`" rather than "is `true`"
+  so a record missing the field cannot pass by accident.
+- **The record's presence is the signal; the platform's is not.** `commit-step`
+  reads the artifact and never `needs.narrate.result`, because the narrate job
+  carries `continue-on-error: true` and a job that died from an exception still
+  reports `success` to its consumers. A signal that reads as authoritative and is
+  not is worse than no signal — it made `commit-step`'s `failed` branch
+  unreachable while looking like the check. **A job that can degrade records its
+  own outcome into `.run/`.**
+- **A stage that delivered nothing is not a degradation.** If the decision set
+  does not arrive, every count in the digest is arithmetic over a set nobody
+  computed, so nothing is published except the heartbeat — and the `heartbeat` job
+  commits it, because the run that writes nothing at all is the run whose schedule
+  GitHub disables after 60 days.
 - **What travels is the status, never the body.** The endpoint's response text is
   not ours to publish and the digest is committed. `lib/llm.mjs` →
   `classifyFailure()` reduces a failure to a status code and a coarse kind.
@@ -426,9 +443,9 @@ Neither is visible by reading either file alone. So:
   appears in the table.
 
 The second direction is scoped to those two prefixes on purpose. Everything else
-a step reads — `COMMENT_ID`, `NARRATE_RESULT`, `PROBE_ENDPOINT` — is plumbing the
-workflow composes out of `needs.*` and `github.*`. Demanding a table row for each
-would be noise, and a noisy check is a disabled check.
+a step reads — `COMMENT_ID`, `PROBE_ENDPOINT`, `FETCH_RESULT`, `COMMIT_RESULT` —
+is plumbing the workflow composes out of `needs.*` and `github.*`. Demanding a
+table row for each would be noise, and a noisy check is a disabled check.
 
 `secrets.GITHUB_TOKEN` is excluded, for the reason I1 excludes it: the platform
 supplies it, the user cannot configure it, and it is not a row.
@@ -437,6 +454,66 @@ supplies it, the user cannot configure it, and it is not a row.
 - **Fails loudly, never vacuously.** If the table anchor is missing, or the table
   parses to zero rows, the check fails rather than reporting success over an
   empty set.
+
+### I15 — A file that crosses a job boundary travels as an artifact
+
+**A job boundary is a filesystem boundary.** Each job gets a fresh runner, so a
+file one job wrote is *absent* in the next unless an artifact carries it.
+
+This is the rule the local suite is structurally unable to check, and that is the
+whole reason it is written down. Run by hand, the four `digest.yml` jobs share one
+`.run/` directory, so a file "narrate" wrote is still sitting there for "commit" —
+which is exactly what GitHub replaces with an explicit upload and download. **A
+sequential local run proves the code, not the wiring between jobs**, and this
+repository had both a green 238-test suite and a completed local end-to-end run
+while the pipeline could not produce a correct digest.
+
+`narrate-step` writes `.run/decisions.json` and `.run/narration.json`;
+`commit-step` reads both (`:78`, `:84`); neither was uploaded. So the commit job
+always saw `decisions = []`, and a stack with a known advisory published
+**"0 to act on"** and reported `ok` — in a security product, silently
+under-reporting an advisory is the worst available failure mode. It reopened I11
+by a new route as well: with `narrationStatus = null`, `narrationGap()` cannot
+tell "configured and broken" from "deliberately keyless".
+
+The same defect was live in `act.yml`: `act-step` writes `.run/act.json`,
+`pr-step` reads it, and nothing carried it — so a `bump` would have opened a pull
+request with an **empty patch** and the default verify command, reporting success
+while changing nothing.
+
+Three assertions, all static:
+
+- a `.run/` file read by one step and written by a different one is carried by an
+  upload **in that job's own workflow**, scoped per job — an upload sitting in a
+  third job that runs *after* the consumer does not span a boundary it appears to;
+- it lands **where the reader looks**. Carried is not delivered: re-pointing a
+  download at `state/` moves the file somewhere `commit-step` never opens, and
+  comparing only the artifact *name* saw nothing;
+- every downloaded artifact name is uploaded in the same workflow.
+
+Read/write classification resolves one level of `const` indirection, because
+`narrate-step` binds `NARRATION = path.join(RUN_DIR, 'narration.json')` and writes
+through the name. Read as a read, that file would have no producer and the check
+would pass over a pipeline that never delivers it.
+
+- **Enforced by:** `lib/invariants.mjs` → `checkArtifactHandoff()`.
+- **What the vocabulary covers.** Four spellings of a write — `writeFileSync`,
+  `appendFileSync`, `writeFile` and `appendFile`, the last two covering
+  `fs.promises.*`; a producer found in a `run:` step directly, through
+  `npm run <name>`, or through `npm test`, both resolved against `package.json`
+  and only when the name resolves; and an upload path that carries a file by
+  exact match, by naming its directory, or by a trailing `/*`.
+- **The narrowness is deliberate, and it is guarded.** `RUN_DIR` is matched by
+  name; if it is ever renamed the scan finds nothing. So the check reports how many
+  handoffs it examined and the test asserts the count is non-zero — a check that
+  can pass vacuously is not a check. Still invisible: a `.run/` path built by any
+  other expression, and a write performed by a module under `lib/` rather than by
+  the step script.
+- **What it cannot see.** That an upload is *reached* at runtime, and that
+  `download-artifact` succeeds. Those are platform facts. The compensating rule is
+  the download side of the pairing: a missing artifact must fail the job, because
+  an empty patch or an empty decision set arriving silently is the failure this
+  invariant exists to prevent.
 
 ---
 
@@ -473,10 +550,42 @@ Three consequences that shape what may be committed here:
 
 - **Enforced by:** `ci.yml` → `no-secrets-in-tree` refuses a credential-shaped
   string anywhere in the tree.
+- **Enforced by:** `tools/check-public-safety.mjs` → `lib/pubsafe.mjs`. The seed
+  stack is compared against the list recorded in `lib/pubsafe.mjs`, as sets — so
+  reordering passes, and adding or removing one entry does not. This is the rule
+  that used to read *"not enforced by anything"*, and a preference is a rule that
+  erodes. It erodes here in the worst direction available: the watch list is both
+  the list of packages watched **and** the command argument allowlist, so one
+  entry naming a private repository publishes an organisation's dependency
+  posture, permanently, in a repository that also has forks.
+- **Not in `lib/invariants.mjs`, and that is deliberate.** Those run on every push
+  in every repository made from this template. Asserting "the stack equals the
+  seed" there would fail a user's CI the moment they watch their own packages —
+  which is the first thing the template asks them to do. The seed rule is a rule
+  about *this* repository, so it is checked before publishing rather than on every
+  run.
+- **Also audited before publishing**, because publishing is a one-way door and
+  "publish, then check" is not an available ordering:
+  - no credential anywhere in **history** — the one thing a private repository
+    cannot delegate, since GitHub's secret scanning is free on public
+    repositories only, so a secret committed and later removed is invisible to
+    every other check here;
+  - no tracked `.run/` scratch;
+  - no committed endpoint `host` or `model` in `data/endpoint.json`, which would
+    contradict I8's position that the endpoint is the user's own business. **The
+    rule and the code disagreed until this was fixed**: `probe()` returned both
+    and `commit-step` wrote the record to that path, so a single
+    `PROBE_ENDPOINT=true` run made this audit fail permanently, with no code path
+    back — latent only because the probe is opt-in. Resolved in the rule's favour,
+    which is also the one-way-door direction: the probe now records capabilities
+    and timings and names no infrastructure, and `commit-step` projects the record
+    through an allowlist (`PUBLISHABLE_ENDPOINT_FIELDS`) before writing it. This
+    audit is the second half — it re-checks the committed file, so a field wrongly
+    added to that allowlist is caught by a check that did not change.
+  - the endpoint's response body appears in no log and no committed file. The
+    same reduction applies to a probe failure and to a narration failure: a kind
+    and a status, never the text (`classifyFailure()`, `classifyProbeFailure()`).
 - **Stated for reporters in:** `SECURITY.md`.
-- **Not enforced by anything:** "this seed entry is too specific". That is a
-  judgement, and it is the one rule in this document that is a preference. It is
-  written down so a reviewer can point at it.
 
 ---
 
@@ -486,8 +595,11 @@ Three consequences that shape what may be committed here:
 .github/workflows/   digest (4 jobs) · ask (3 jobs) · act · sandbox · pages · ci
 .github/CODEOWNERS   the paths where a quiet change is worse than a loud one
 lib/                 the documented five: llm · probe · commands · sandbox · triage
-                     plus internals: store · version · gate · sources · render · invariants
+                     plus internals: store · version · gate · sources · render ·
+                     invariants · pubsafe
 scripts/             one entry point per job
+tools/               the checks a human runs: invariants (per push) ·
+                     public-safety (before publishing)
 data/                state — all behind the gate except heartbeat.json
 history/             append-only: events · commands · runs (hash-chained)
 digest/              dated archive
@@ -506,11 +618,19 @@ The five named modules in `lib/` are the documented surface. Everything else in
 ```bash
 npm test                     # unit tests, no network
 npm run check                # invariant checks over the workflows on disk
+npm run audit:public         # before this repository is published — see §2.1
 node scripts/fetch-step.mjs  # dry run; writes .run/payload.json, no commit
 ```
 
 `fetch` and `narrate` are read-only and safe to run locally. `commit` writes —
 run it only in CI unless you know why you are running it.
+
+**What a local run cannot prove.** Running the steps in sequence leaves them all
+in one `.run/` directory, which is exactly what GitHub replaces with an explicit
+artifact handoff between jobs. So a sequential local run proves the code, not the
+wiring — which is how a green 238-test suite coexisted with a pipeline that could
+not produce a correct digest (I15). Anything that crosses a job boundary is a
+platform fact: verify it on a real run.
 
 To run the whole pipeline locally without touching git:
 

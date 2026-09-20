@@ -113,6 +113,17 @@ jobs:
           retention-days: 1
           if-no-files-found: error
 
+      # Bounded writes, asserted against the working tree before anything is
+      # staged. `digest.yml` has done this from the beginning; this job did not,
+      # so the only thing keeping it inside the allowlist was the writers
+      # happening to use the right paths — a property of today's code rather than
+      # a guarantee, and `git add -A` publishes whatever it finds.
+      #
+      # `--dirty` only. The static half (`--allowlist`) is a property of the tree
+      # rather than of this run, and `ci.yml` already asserts it on every push.
+      - name: Assert nothing unexpected is dirty
+        run: node tools/check-invariants.mjs --dirty
+
       - name: Commit the intent row
         run: |
           set -euo pipefail
@@ -207,6 +218,9 @@ jobs:
           COMMENT_ID: ${{ needs.route.outputs.comment_id }}
           ISSUE_NUMBER: ${{ needs.route.outputs.issue_number }}
           EXPLAIN_RESULT: ${{ needs.explain.result }}
+
+      - name: Assert nothing unexpected is dirty
+        run: node tools/check-invariants.mjs --dirty
 
       - name: Commit the outcome row
         run: |

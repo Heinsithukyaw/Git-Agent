@@ -117,11 +117,36 @@ jobs:
           AGENT_LANG: ${{ vars.AGENT_LANG || 'en' }}
           PROBE_ENDPOINT: ${{ github.event.inputs.probe_endpoint || 'false' }}
 
-      - name: Upload prose
+      # The whole handoff, not just the prose.
+      #
+      # `commit-step` reads `decisions.json` (line 78), `narration.json` (line 84)
+      # and `endpoint.json` (line 179) as well as `prose.md` — and an artifact that
+      # carries only one of the four delivers an empty decision set to the job that
+      # writes the digest. The run then publishes "0 to act on" and still reports
+      # `ok`, which is the worst available failure mode in a security product.
+      #
+      # `decisions.json` and `narration.json` are written before any early return,
+      # so this artifact exists on every path that *returns*. It does not exist on
+      # a path that *throws*: `decisions.json` is written after `readPayload()` and
+      # `await triage()`, either of which can raise, and a failed step skips the
+      # steps below it. `if: always()` is what keeps a partial run's decisions —
+      # `probe()` throwing after the decisions were written is the case that
+      # matters, and without it those decisions are lost and the commit job
+      # publishes "0 to act on" again. `prose.md` and `endpoint.json` are the
+      # optional two, hence `ignore`.
+      #
+      # I15 asserts this list covers every `.run/` file read across a step
+      # boundary, so the next file added to the pipeline cannot quietly miss it.
+      - name: Upload run state
+        if: always()
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: prose
-          path: .run/prose.md
+          name: run-state
+          path: |
+            .run/prose.md
+            .run/decisions.json
+            .run/narration.json
+            .run/endpoint.json
           retention-days: 1
           if-no-files-found: ignore
 
@@ -149,21 +174,41 @@ jobs:
           name: payload
           path: .run
 
-      - name: Download prose
-        if: ${{ needs.narrate.result == 'success' }}
+      # No `if:` guard, and deliberately tolerant.
+      #
+      # The guard this replaces was `needs.narrate.result == 'success'`, which is
+      # the wrong signal: `narrate` sets `continue-on-error: true` and exits 0 by
+      # design on the keyless path, so that condition is TRUE on exactly the runs
+      # where `prose.md` may not exist. `download-artifact` has no ignore option,
+      # so the pairing turned a healthy keyless run red — contradicting I9, where
+      # a keyless instance is a supported, complete mode rather than a failure.
+      #
+      # The artifact is named after the job that produces it, so a missing one
+      # means `narrate` failed outright. That is a degradation, not a reason to
+      # abandon the run: the heartbeat must still move, or a broken agent commits
+      # nothing and GitHub disables the schedule after 60 days.
+      - name: Download run state
+        continue-on-error: true
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          name: prose
+          name: run-state
           path: .run
 
       # The containment gate runs here, in the job that holds no model key.
+      #
+      # There is deliberately no `NARRATE_RESULT` here. There was, and it was
+      # `${{ needs.narrate.result }}` — which cannot be trusted: `narrate` carries
+      # `continue-on-error: true`, so the platform reports `success` for a job that
+      # died from an exception, and the `failed` branch it fed was unreachable.
+      # `commit-step` reads `.run/narration.json` instead, which `narrate-step`
+      # writes on every path including its own top-level `catch`. A signal that
+      # reads as authoritative and is not is worse than no signal.
       - name: Gate and write
         run: node scripts/commit-step.mjs
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
-          NARRATE_RESULT: ${{ needs.narrate.result }}
 
       # Bounded writes, enforced a second time against the actual working tree.
       - name: Assert nothing unexpected is dirty
@@ -187,18 +232,31 @@ jobs:
 
   # ----------------------------------------------------------- heartbeat --
   #
-  # A failed fetch skips the commit job above — correctly, since there is no
-  # payload to render. But then the heartbeat does not move either, and a
-  # scheduled workflow that commits nothing for 60 days has its schedule
-  # disabled by GitHub: the failure becomes permanent, and silently.
+  # A run that produced nothing still has to move the liveness signal, or the
+  # schedule dies with it. GitHub disables a scheduled workflow after 60 days of
+  # no repository activity, so a run that commits nothing is not merely quiet —
+  # it is the first step towards the failure becoming permanent and silent.
   #
-  # This job exists only for that case. It holds `contents: write` and no secret,
-  # like every other writing job (I1), and it writes only the heartbeat and the
-  # run log, both inside the collector allowlist (I3).
+  # Two ways to produce nothing, and both land here:
+  #
+  #   - `fetch` failed, so there is no payload and `commit` was skipped;
+  #   - `commit` ran and did not succeed — most importantly when the narrate
+  #     stage delivered nothing, in which case `commit-step` deliberately
+  #     publishes nothing rather than a digest whose counts it cannot
+  #     substantiate.
+  #
+  # `commit` is in `needs` and the condition reads its result, which is safe:
+  # `commit` does NOT carry `continue-on-error`, so `needs.commit.result` means
+  # what it says. `narrate` does carry it, which is why its result is read
+  # nowhere.
+  #
+  # This job holds `contents: write` and no secret, like every other writing job
+  # (I1), and it writes only the heartbeat, the run log and the README region,
+  # all inside the collector allowlist (I3).
   heartbeat:
     name: heartbeat
-    needs: [fetch, narrate]
-    if: ${{ always() && needs.fetch.result != 'success' }}
+    needs: [fetch, narrate, commit]
+    if: ${{ always() && (needs.fetch.result != 'success' || needs.commit.result != 'success') }}
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -218,7 +276,11 @@ jobs:
           GITHUB_RUN_ID: ${{ github.run_id }}
           GITHUB_RUN_ATTEMPT: ${{ github.run_attempt }}
           HEARTBEAT_STATUS: failed
-          HEARTBEAT_REASON: "The fetch job did not produce a payload (result: ${{ needs.fetch.result }})."
+          # The reason is built from these in `heartbeat-step.mjs` rather than
+          # from an expression here, so the wording lives with the code that
+          # writes it and a new cause cannot silently reuse another one's text.
+          FETCH_RESULT: ${{ needs.fetch.result }}
+          COMMIT_RESULT: ${{ needs.commit.result }}
 
       - name: Assert nothing unexpected is dirty
         run: |

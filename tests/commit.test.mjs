@@ -27,6 +27,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { check } from '../lib/gate.mjs';
+import { parseYaml } from '../lib/invariants.mjs';
 
 const REPO = process.cwd();
 const SCRIPT = path.join(REPO, 'scripts/commit-step.mjs');
@@ -133,13 +134,43 @@ const GROUNDED = [
 /** A package the payload has never heard of. */
 const UNGROUNDED = 'lodash is pinned at 4.17.21, and we also import left-pad.';
 
-function sandbox({ prose = null, narrationStatus = null } = {}) {
+/**
+ * What a keyless run records: no endpoint was asked for, so there is no gap.
+ *
+ * This is the *default* here, not the absence of a record, and the difference is
+ * load-bearing. `narrate-step` writes `narration.json` on every path that
+ * returns, including this one, so a sandbox with no record at all is not
+ * modelling a keyless instance — it is modelling a narrate stage that delivered
+ * nothing, which `commit-step` treats as a failure.
+ */
+const KEYLESS_STATUS = { configured: false, ok: false, kind: 'not-configured', status: null };
+
+/**
+ * The artifacts the narrate job produces, as the commit job receives them.
+ *
+ * The two flags model the two ways the stage can fail to deliver, and they are
+ * different states rather than one:
+ *
+ *   - `decisionsDelivered: false` alone is the **crash**: `narrate-step` writes
+ *     its provisional `narration.json` before anything that can throw, so the
+ *     record arrives and the decision set does not.
+ *   - both false is the **job**: it died before the step ran at all, so the
+ *     run-state artifact is empty and neither file crosses the boundary.
+ */
+function sandbox({
+  prose = null,
+  narrationStatus = KEYLESS_STATUS,
+  decisionsDelivered = true,
+  narrationDelivered = true,
+} = {}) {
   const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-agent-commit-'));
   fs.mkdirSync(path.join(dir, '.run'), { recursive: true });
   fs.writeFileSync(path.join(dir, '.run/payload.json'), JSON.stringify(payload(), null, 2) + '\n', 'utf8');
-  fs.writeFileSync(path.join(dir, '.run/decisions.json'), JSON.stringify(decisions(), null, 2) + '\n', 'utf8');
+  if (decisionsDelivered) {
+    fs.writeFileSync(path.join(dir, '.run/decisions.json'), JSON.stringify(decisions(), null, 2) + '\n', 'utf8');
+  }
   if (prose !== null) fs.writeFileSync(path.join(dir, '.run/prose.md'), prose, 'utf8');
-  if (narrationStatus) {
+  if (narrationDelivered) {
     fs.writeFileSync(
       path.join(dir, '.run/narration.json'),
       JSON.stringify({ recorded_at: OBSERVED, ...narrationStatus }, null, 2) + '\n',
@@ -306,4 +337,201 @@ test('the client identity stays in the artifact and out of everything committed'
     /a-tool/,
     'and the digest is the most public surface of all',
   );
+});
+
+test('the decision rows survive the job boundary — the artifact handoff, simulated', () => {
+  // Every other test in this file fabricates `.run/decisions.json` straight into
+  // the sandbox, and that fabrication is exactly why the pipeline could ship
+  // green while publishing "0 to act on": it hides the boundary. On GitHub the
+  // commit job is a fresh runner that sees only what the narrate job uploaded.
+  //
+  // So the upload list is read out of the real workflow and *only* those paths
+  // are copied across. This is the closest a local test can get to the platform
+  // fact, and it is the test whose absence let the defect ship.
+  const wf = parseYaml(fs.readFileSync(path.join(REPO, '.github/workflows/digest.yml'), 'utf8'));
+
+  // Every artifact this workflow can carry, by name.
+  const byName = new Map();
+  for (const job of Object.values(wf.jobs)) {
+    for (const step of job.steps ?? []) {
+      if (String(step.uses ?? '').split('@')[0] !== 'actions/upload-artifact') continue;
+      const paths = String(step.with?.path ?? '')
+        .split('\n')
+        .map((l) => l.trim())
+        .filter(Boolean);
+      byName.set(String(step.with?.name), paths);
+    }
+  }
+
+  // What the commit job actually receives is the union of the artifacts it
+  // downloads — `payload` from the fetch job and the run state from narrate.
+  // Modelling it as "the narrate job's upload" would be wrong in a way that
+  // looks right: the payload arrives by a different artifact entirely.
+  const downloaded = [];
+  for (const step of wf.jobs.commit.steps ?? []) {
+    if (String(step.uses ?? '').split('@')[0] !== 'actions/download-artifact') continue;
+    downloaded.push(String(step.with?.name));
+  }
+  assert.ok(downloaded.length >= 2, `the commit job downloads ${JSON.stringify(downloaded)}`);
+
+  const crossing = downloaded.flatMap((name) => byName.get(name) ?? []);
+  assert.ok(
+    crossing.includes('.run/decisions.json'),
+    `the decision rows must cross the job boundary; the commit job receives ${JSON.stringify(crossing)}`,
+  );
+
+  // What narrate leaves behind on a keyless run: the triage output and the
+  // narration record, no prose, no endpoint probe.
+  const produced = fs.mkdtempSync(path.join(os.tmpdir(), 'git-agent-narrate-'));
+  fs.mkdirSync(path.join(produced, '.run'), { recursive: true });
+  fs.writeFileSync(path.join(produced, '.run/payload.json'), JSON.stringify(payload(), null, 2), 'utf8');
+  fs.writeFileSync(path.join(produced, '.run/decisions.json'), JSON.stringify(decisions(), null, 2), 'utf8');
+  fs.writeFileSync(
+    path.join(produced, '.run/narration.json'),
+    JSON.stringify(
+      { recorded_at: OBSERVED, configured: false, ok: false, kind: 'not-configured', status: null },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+
+  // A fresh runner: only the uploaded paths cross.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-agent-commit-'));
+  for (const rel of crossing) {
+    const from = path.join(produced, rel);
+    if (!fs.existsSync(from)) continue;
+    const to = path.join(dir, rel);
+    fs.mkdirSync(path.dirname(to), { recursive: true });
+    fs.copyFileSync(from, to);
+  }
+
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+
+  const rows = JSON.parse(fs.readFileSync(path.join(dir, 'history/runs.jsonl'), 'utf8').trim().split('\n')[0]);
+  assert.equal(
+    rows.counts.decisions,
+    2,
+    'an empty decision set that still reports ok is the defect this pins',
+  );
+  assert.equal(
+    rows.narration_status.configured,
+    false,
+    'and the narration record must cross too, or I11 cannot tell a broken endpoint from a keyless instance',
+  );
+
+  // The absence signal: both are written only from `decisions`, so their absence
+  // in a commit is what the artifact gap looks like from outside the pipeline.
+  assert.ok(fs.existsSync(path.join(dir, 'data/triage.jsonl')), 'triage rows reach the append-only log');
+  assert.ok(fs.existsSync(path.join(dir, 'history/events.jsonl')), 'and so do the transitions');
+});
+
+test('a narrate stage that delivered nothing publishes nothing but the heartbeat', () => {
+  // The route this closes. `needs.narrate.result` is `success` under
+  // `continue-on-error: true`, so a narrate job that died from an exception used
+  // to leave this job with an empty decision set — which it read as "0 to act on"
+  // and reported as `ok`. Refusing to publish is the fix; the `heartbeat` job in
+  // `digest.yml` is what keeps the liveness signal moving anyway.
+  const dir = sandbox({ decisionsDelivered: false, narrationDelivered: false });
+  const result = run(dir);
+
+  assert.equal(result.status, 1, 'a run whose substance is missing must fail loudly');
+  assert.match(result.stderr, /did not deliver its output/);
+  assert.match(result.stderr, /\.run\/decisions\.json/);
+  assert.match(result.stderr, /\.run\/narration\.json/);
+
+  // The heartbeat moves. That is the whole point of the exemption (I4): a broken
+  // agent that commits nothing gets its schedule disabled after 60 days.
+  const heartbeat = JSON.parse(fs.readFileSync(path.join(dir, 'data/heartbeat.json'), 'utf8'));
+  assert.equal(heartbeat.last_status, 'failed');
+  assert.equal(heartbeat.consecutive_failures, 1);
+
+  // And nothing else does. A digest rendered from a decision set nobody computed
+  // is the failure mode, so there must be no digest at all.
+  assert.deepEqual(written(dir), ['data/heartbeat.json']);
+});
+
+test('a crash between the provisional record and the decision set is caught too', () => {
+  // The narrower of the two states, and the one the provisional write exists to
+  // make visible: `narration.json` arrives carrying `kind: 'started'`, because
+  // `narrate-step` writes it before `readPayload()` and `triage()`, either of
+  // which can throw. So the record is present and says "began, never finished" —
+  // which must not read as a keyless instance, and must not be published as one.
+  const dir = sandbox({
+    decisionsDelivered: false,
+    narrationStatus: { configured: null, ok: false, kind: 'started' },
+  });
+  const result = run(dir);
+
+  assert.equal(result.status, 1, result.stderr);
+  assert.match(result.stderr, /\.run\/decisions\.json/, 'the missing half is named');
+  assert.doesNotMatch(result.stderr, /\.run\/narration\.json/, 'and the delivered half is not');
+  assert.deepEqual(written(dir), ['data/heartbeat.json']);
+});
+
+test('a narrate step that crashed still degrades rather than failing the run', () => {
+  // The distinction the status vocabulary exists for. The decision set arrived, so
+  // the digest is complete and correct — only the prose is missing — and a
+  // narration failure must never fail a run whose product is intact. The record,
+  // not the platform's masked job result, is what decides this.
+  const dir = sandbox({
+    narrationStatus: { configured: true, ok: false, kind: 'crashed', status: null, detail: 'TypeError' },
+  });
+  const result = run(dir);
+
+  assert.equal(result.status, 0, result.stderr);
+  const row = JSON.parse(fs.readFileSync(path.join(dir, 'history/runs.jsonl'), 'utf8').trim());
+  assert.equal(row.status, 'degraded');
+  assert.equal(row.narration_status.kind, 'crashed', 'the why travels, not just the that');
+  assert.match(fs.readFileSync(path.join(dir, 'digest/2026-09-20.md'), 'utf8'), /failed before it could call the model/);
+});
+
+test('a decision set that is present but empty is still a published digest', () => {
+  // The other half of the same distinction, and the reason the check is on the
+  // *file* rather than on its length: an empty set is a real answer — "we looked
+  // and found nothing" — and it must keep producing a digest. Failing closed here
+  // would trade a false negative for a false alarm.
+  const dir = sandbox();
+  fs.writeFileSync(path.join(dir, '.run/decisions.json'), '[]', 'utf8');
+  const result = run(dir);
+
+  assert.equal(result.status, 0, result.stderr);
+  const row = JSON.parse(fs.readFileSync(path.join(dir, 'history/runs.jsonl'), 'utf8').trim());
+  assert.equal(row.counts.decisions, 0);
+  assert.equal(row.status, 'ok');
+  assert.ok(fs.existsSync(path.join(dir, 'digest/2026-09-20.md')), 'an empty set is still a digest');
+});
+
+test('the committed endpoint record carries no host and no model', () => {
+  // `lib/probe.mjs` no longer emits either, and `commit-step` projects the record
+  // through an allowlist anyway — this file is a one-way door, committed to a
+  // repository that may be public. Both halves are pinned here;
+  // `checkNoEndpointDisclosure()` re-checks the committed result before
+  // publication, which is what would catch a field wrongly added to the allowlist.
+  const dir = sandbox();
+  fs.writeFileSync(
+    path.join(dir, '.run/endpoint.json'),
+    JSON.stringify(
+      {
+        probed_at: OBSERVED,
+        configured: true,
+        host: 'gateway.internal.example',
+        model: 'a-model',
+        capabilities: { chat_completions: true },
+        timings: { chat_ms: 42 },
+      },
+      null,
+      2,
+    ),
+    'utf8',
+  );
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+
+  const committed = JSON.parse(fs.readFileSync(path.join(dir, 'data/endpoint.json'), 'utf8'));
+  assert.equal(committed.host, undefined, "the host is the user's, not the template's (I8)");
+  assert.equal(committed.model, undefined);
+  assert.equal(committed.capabilities.chat_completions, true, 'the measurement is the point');
+  assert.equal(committed.timings.chat_ms, 42);
 });

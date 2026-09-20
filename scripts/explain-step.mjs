@@ -15,7 +15,7 @@
 
 import fs from 'node:fs';
 import path from 'node:path';
-import { complete, isConfigured, unfence, config } from '../lib/llm.mjs';
+import { complete, isConfigured, unfence, config, classifyFailure } from '../lib/llm.mjs';
 import { readRows } from '../lib/store.mjs';
 import { explainFacts } from '../lib/render.mjs';
 
@@ -75,6 +75,15 @@ async function main() {
 }
 
 main().catch((err) => {
-  console.error(`::error::${err.message ?? String(err)}`);
+  // The same reduction `narrate-step` applies, and for the same reason: a
+  // `complete()` failure carries up to 400 characters of the endpoint's response
+  // body in its message, and this log is public on a public repository. The
+  // status is the diagnosis; the body is the endpoint's text, not ours.
+  const classified = classifyFailure(err);
+  console.error(
+    classified.status
+      ? `::error::${err?.name ?? 'Error'}: the endpoint answered HTTP ${classified.status}`
+      : `::error::${err?.message ?? String(err)}`,
+  );
   process.exit(1);
 });

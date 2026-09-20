@@ -50,7 +50,7 @@ function run(dir, env = {}) {
 
 test('a failed run increments the streak and records the run', () => {
   const dir = sandbox();
-  const result = run(dir, { HEARTBEAT_STATUS: 'failed', HEARTBEAT_REASON: 'no payload' });
+  const result = run(dir, { HEARTBEAT_STATUS: 'failed', FETCH_RESULT: 'failure' });
   assert.equal(result.status, 0, result.stderr);
 
   const heartbeat = JSON.parse(fs.readFileSync(path.join(dir, 'data/heartbeat.json'), 'utf8'));
@@ -66,8 +66,37 @@ test('a failed run increments the streak and records the run', () => {
     .map((l) => JSON.parse(l));
   assert.equal(rows.length, 1, 'a run that produced nothing is still a run');
   assert.equal(rows[0].status, 'failed');
-  assert.equal(rows[0].reason, 'no payload');
+  assert.equal(
+    rows[0].reason,
+    'The fetch job did not produce a payload (result: failure).',
+    'the reason names the job that actually failed',
+  );
   assert.ok(rows[0].hash, 'the run log stays chained');
+});
+
+test('the reason names the job that failed, not the one that was skipped', () => {
+  // When `fetch` fails, the `commit` job is *skipped* rather than failed, and
+  // `needs.commit.result` reads `skipped`. Reporting that as the cause would name
+  // the wrong job — so `fetch` is checked first, and this pins that ordering.
+  const dir = sandbox();
+  run(dir, { HEARTBEAT_STATUS: 'failed', FETCH_RESULT: 'failure', COMMIT_RESULT: 'skipped' });
+
+  const row = JSON.parse(fs.readFileSync(path.join(dir, 'history/runs.jsonl'), 'utf8').trim());
+  assert.equal(row.reason, 'The fetch job did not produce a payload (result: failure).');
+});
+
+test('a failed commit is its own reason, and reaches the same liveness signal', () => {
+  // The second cause this job covers, and the one that used to leave the
+  // repository untouched: `commit-step` refuses to publish when the narrate stage
+  // delivered no decision set, so the commit job fails and nothing moves. Without
+  // this branch the refusal would be silent for 60 days and then permanent.
+  const dir = sandbox();
+  run(dir, { HEARTBEAT_STATUS: 'failed', FETCH_RESULT: 'success', COMMIT_RESULT: 'failure' });
+
+  const row = JSON.parse(fs.readFileSync(path.join(dir, 'history/runs.jsonl'), 'utf8').trim());
+  assert.equal(row.reason, 'The commit job did not publish a digest (result: failure).');
+  const heartbeat = JSON.parse(fs.readFileSync(path.join(dir, 'data/heartbeat.json'), 'utf8'));
+  assert.equal(heartbeat.consecutive_failures, 1);
 });
 
 test('the streak is monotonic while the agent stays broken', () => {
@@ -99,11 +128,11 @@ test('a success resets the streak', () => {
 
 test('the README region states the failure instead of showing a stale summary', () => {
   const dir = sandbox();
-  run(dir, { HEARTBEAT_STATUS: 'failed', HEARTBEAT_REASON: 'The fetch job did not produce a payload.' });
+  run(dir, { HEARTBEAT_STATUS: 'failed', FETCH_RESULT: 'failure' });
 
   const readme = fs.readFileSync(path.join(dir, 'README.md'), 'utf8');
   assert.match(readme, /The last run did not complete\./);
-  assert.match(readme, /The fetch job did not produce a payload\./);
+  assert.match(readme, /The fetch job did not produce a payload \(result: failure\)\./);
   assert.match(readme, /consecutive failures: 1/);
   assert.doesNotMatch(readme, /1 to act on/, 'the previous summary must not survive a failure');
   assert.match(readme, /^# Git Agent/, 'the rest of the README is untouched');

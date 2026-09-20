@@ -20,3 +20,10 @@ node_modules/
 # Session metadata for the AI assistant that helped build this. Kept on disk,
 # deliberately not shipped: it is a working log, not part of the template.
 .workbuddy-ai/
+
+# Internal review output — engineering-assurance reports. Kept on disk for the
+# maintainer, deliberately not shipped: they name the people who produced them
+# and discuss this repository's own deployment posture, which is exactly the
+# material the pre-publication audit exists to keep out of a public tree. The
+# audit cannot see them, so `git add -A` would publish them.
+deliverables/

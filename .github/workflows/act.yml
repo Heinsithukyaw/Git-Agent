@@ -85,6 +85,12 @@ jobs:
           ISSUE_NUMBER: ${{ github.event.issue.number }}
           SANDBOX_ENABLED: ${{ vars.SANDBOX_ENABLED || 'false' }}
 
+      # Same guard as `digest.yml`, and the same reasoning as in `ask.yml`: this
+      # job stages with `git add -A`, so the allowlist has to be asserted against
+      # the working tree rather than trusted to the writers' good behaviour.
+      - name: Assert nothing unexpected is dirty
+        run: node tools/check-invariants.mjs --dirty
+
       - name: Commit the intent row
         run: |
           set -euo pipefail
@@ -94,6 +100,26 @@ jobs:
           git add -A
           git commit -m "act: recorded /agent ${{ steps.plan.outputs.verb }} ${{ steps.plan.outputs.package }}"
           git push
+
+      # The plan crosses a job boundary, so it has to travel as an artifact.
+      # `pr-step` reads `.run/act.json` for the patch and the verify command; with
+      # nothing carrying it the file is simply absent in the next job, `plan`
+      # resolves to null, and the fallbacks at `pr-step.mjs:73-74` quietly produce
+      # a pull request with an EMPTY patch and the default command — a write verb
+      # that reports success and changes nothing.
+      #
+      # `error`, not `ignore`: `act.json` is written at `act-step.mjs:202`, after
+      # every validation path has returned, and `verb` is set immediately after at
+      # `:208`. So `verb != ''` — the condition this job's dependants are gated on
+      # — is exactly "the plan exists". A missing plan here is a defect, not an
+      # optional input.
+      - name: Upload the plan
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: act-plan
+          path: .run/act.json
+          retention-days: 1
+          if-no-files-found: error
 
   # --------------------------------------------------------------- sandbox --
   sandbox:
@@ -127,6 +153,17 @@ jobs:
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
         with:
           node-version: '22'
+
+      # No guard and no tolerance: this job runs only when `plan` produced a verb,
+      # which is exactly when `.run/act.json` exists (see the upload note above).
+      # An artifact that fails to arrive must fail the job — an empty patch
+      # reaching `pr-step` opens a pull request that claims a change it does not
+      # make, which is the one outcome worse than no pull request at all.
+      - name: Download the plan
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: act-plan
+          path: .run
 
       - name: Open the pull request
         run: node scripts/pr-step.mjs

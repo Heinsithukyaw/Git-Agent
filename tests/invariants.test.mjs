@@ -28,6 +28,7 @@ import {
   checkActionsPinned,
   checkAuthorGateMirrorsScript,
   checkConfigSurface,
+  checkArtifactHandoff,
   runAll,
 } from '../lib/invariants.mjs';
 import { CI_ALLOWLIST } from '../lib/store.mjs';
@@ -646,6 +647,329 @@ test('the repository documents every variable its workflows ask for, and wires e
   assert.equal(result.ok, true, rulesOf(result));
   assert.ok(result.documented.includes('JEV_MODEL'), 'the knob this check was written for');
   assert.ok(result.read.includes('JEV_MODEL'), 'and the code that reads it');
+});
+
+/* ------------------------------------------------- I15 artifact handoff --- */
+
+/**
+ * Two step scripts with the shape the real pipeline has: one writes a file into
+ * `.run/`, the other reads it. Run by hand they share a directory; on GitHub they
+ * are separate jobs, and only an artifact bridges them.
+ */
+const WRITES_DECISIONS = [
+  "import fs from 'node:fs';",
+  "import path from 'node:path';",
+  "const RUN_DIR = '.run';",
+  "fs.writeFileSync(path.join(RUN_DIR, 'decisions.json'), '[]', 'utf8');",
+  '',
+].join('\n');
+
+const READS_DECISIONS = [
+  "import fs from 'node:fs';",
+  "import path from 'node:path';",
+  "const RUN_DIR = '.run';",
+  "const d = JSON.parse(fs.readFileSync(path.join(RUN_DIR, 'decisions.json'), 'utf8'));",
+  '',
+].join('\n');
+
+/** The producer writes through a `const`, the way `narrate-step` writes narration.json. */
+const WRITES_VIA_ALIAS = [
+  "import fs from 'node:fs';",
+  "import path from 'node:path';",
+  "const RUN_DIR = '.run';",
+  "const NARRATION = path.join(RUN_DIR, 'narration.json');",
+  "fs.writeFileSync(NARRATION, '{}', 'utf8');",
+  '',
+].join('\n');
+
+const READS_NARRATION = [
+  "import fs from 'node:fs';",
+  "import path from 'node:path';",
+  "const RUN_DIR = '.run';",
+  "const s = fs.existsSync(path.join(RUN_DIR, 'narration.json'));",
+  '',
+].join('\n');
+
+function pipelineWorkflow({ upload = null, download = null, downloadPath = '.run' } = {}) {
+  const lines = ['name: pipeline', 'jobs:', '  produce:', '    steps:', '      - run: node scripts/produce-step.mjs'];
+  if (upload) {
+    lines.push(
+      `      - uses: actions/upload-artifact@${SHA}`,
+      '        with:',
+      '          name: state',
+      `          path: ${upload}`,
+    );
+  }
+  lines.push('  consume:', '    needs: produce', '    steps:');
+  if (download) {
+    lines.push(
+      `      - uses: actions/download-artifact@${SHA}`,
+      '        with:',
+      `          name: ${download}`,
+      `          path: ${downloadPath}`,
+    );
+  }
+  lines.push('      - run: node scripts/consume-step.mjs');
+  return lines.join('\n');
+}
+
+test('a file one step writes and another reads must travel as an artifact', () => {
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow(),
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, false, 'the file crosses a job boundary and nothing carries it');
+  assert.equal(result.violations[0].path, '.run/decisions.json');
+  assert.equal(result.violations[0].script, 'scripts/consume-step.mjs');
+  assert.equal(result.violations[0].producer, 'scripts/produce-step.mjs');
+  assert.match(result.violations[0].rule, /I15/);
+});
+
+test('the same pipeline passes once the file is uploaded and downloaded', () => {
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow({ upload: '.run/decisions.json', download: 'state' }),
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.equal(result.checked, 1, 'and the check did real work rather than passing vacuously');
+});
+
+test('a write through a const is a write, not a read', () => {
+  // If the alias were read as a read, `narration.json` would have no producer in
+  // this workflow and the check would pass on a pipeline that never delivers it.
+  const missing = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_VIA_ALIAS,
+    'scripts/consume-step.mjs': READS_NARRATION,
+    '.github/workflows/pipeline.yml': pipelineWorkflow(),
+  });
+  const result = checkArtifactHandoff(missing);
+  assert.equal(result.ok, false);
+  assert.equal(result.violations[0].path, '.run/narration.json');
+  assert.equal(
+    result.violations[0].producer,
+    'scripts/produce-step.mjs',
+    'the const indirection has to be resolved, or the producer is invisible',
+  );
+
+  const carried = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_VIA_ALIAS,
+    'scripts/consume-step.mjs': READS_NARRATION,
+    '.github/workflows/pipeline.yml': pipelineWorkflow({ upload: '.run/narration.json', download: 'state' }),
+  });
+  assert.equal(checkArtifactHandoff(carried).ok, true);
+});
+
+test('an async write is a write — fs.promises.writeFile is not invisible', () => {
+  // The vocabulary was `writeFileSync` and `appendFileSync` only, so a producer
+  // that wrote asynchronously looked exactly like one that wrote nothing — and
+  // nothing had to carry a file it had written. The pipeline is one refactor away
+  // from that shape, and the refactor would have been silent.
+  const writesAsync = [
+    "import fs from 'node:fs';",
+    "import path from 'node:path';",
+    "const RUN_DIR = '.run';",
+    "await fs.promises.writeFile(path.join(RUN_DIR, 'decisions.json'), '[]', 'utf8');",
+    '',
+  ].join('\n');
+
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': writesAsync,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow(),
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, false, 'the async producer has to be seen');
+  assert.equal(result.violations[0].producer, 'scripts/produce-step.mjs');
+  assert.equal(result.violations[0].path, '.run/decisions.json');
+});
+
+test('an upload of the directory, or of a glob, carries the files under it', () => {
+  // Both were false positives: the path did not match the file *exactly*, so a
+  // workflow that uploaded `.run/` wholesale was told it carried nothing. That is
+  // the wrong direction to be wrong in — a check that cries wolf gets disabled.
+  for (const upload of ['.run', '.run/*']) {
+    const root = syntheticRoot({
+      'scripts/produce-step.mjs': WRITES_DECISIONS,
+      'scripts/consume-step.mjs': READS_DECISIONS,
+      '.github/workflows/pipeline.yml': pipelineWorkflow({ upload, download: 'state' }),
+    });
+    const result = checkArtifactHandoff(root);
+    assert.equal(
+      result.ok,
+      true,
+      `"${upload}" carries .run/decisions.json: ${JSON.stringify(result.violations)}`,
+    );
+    assert.equal(result.checked, 1, 'and the check still did real work');
+  }
+
+  // The other direction, so the widening is not simply "anything carries
+  // anything": a path that names a *different* file still carries nothing.
+  const wrong = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow({ upload: '.run/prose.md', download: 'state' }),
+  });
+  assert.equal(checkArtifactHandoff(wrong).ok, false, 'a sibling file is not the file');
+});
+
+test('a producer invoked through npm run is resolved, and an unresolvable one is not guessed at', () => {
+  const workflow = [
+    'name: pipeline',
+    'jobs:',
+    '  produce:',
+    '    steps:',
+    '      - run: npm run gather',
+    '  consume:',
+    '    needs: produce',
+    '    steps:',
+    '      - run: node scripts/consume-step.mjs',
+    '',
+  ].join('\n');
+
+  const resolved = syntheticRoot({
+    'package.json': JSON.stringify({ scripts: { gather: 'node scripts/produce-step.mjs' } }),
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': workflow,
+  });
+  const result = checkArtifactHandoff(resolved);
+  assert.equal(result.ok, false, 'an npm-invoked producer writes the file too');
+  assert.equal(result.violations[0].producer, 'scripts/produce-step.mjs');
+
+  // An unresolvable name is not evidence of anything. Inventing a violation from
+  // one is how a check earns the reputation that gets it switched off.
+  const unresolved = syntheticRoot({
+    'package.json': JSON.stringify({ scripts: { gather: 'echo nothing to see here' } }),
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': workflow,
+  });
+  const other = checkArtifactHandoff(unresolved);
+  assert.equal(other.ok, true, 'no producer in this workflow, so nothing is demanded');
+  assert.equal(other.checked, 0);
+});
+
+test('a folded scalar folds, because the reader used to treat > exactly like |', () => {
+  // Not cosmetic. Both consumers of a block scalar in this repository — an
+  // upload's path list and a `run:` script — are sensitive to exactly the
+  // difference, so reading a folded scalar as a literal one meant reading a
+  // workflow GitHub would never produce.
+  const literal = parseYaml(
+    ['name: pipeline', 'jobs:', '  one:', '    steps:', '      - run: |', '          echo one', '          echo two', ''].join('\n'),
+  );
+  assert.equal(literal.jobs.one.steps[0].run, 'echo one\necho two');
+
+  const folded = parseYaml(['a: >', '  one', '  two', '', '  three', ''].join('\n'));
+  assert.equal(folded.a, 'one two\nthree', 'a newline becomes a space, a blank line becomes a newline');
+
+  const stripped = parseYaml(['a: >-', '  one', '  two', ''].join('\n'));
+  assert.equal(stripped.a, 'one two');
+});
+
+test('downloading an artifact nothing uploads is a violation', () => {
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow({ download: 'ghost' }),
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, false);
+  assert.match(result.violations.map((v) => v.rule).join('\n'), /downloads artifact "ghost"/);
+});
+
+test('a step that only writes needs nothing delivered to it', () => {
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    '.github/workflows/producer.yml': 'name: p\njobs:\n  produce:\n    steps:\n      - run: node scripts/produce-step.mjs\n',
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, true);
+  assert.equal(result.checked, 0, 'nothing crosses a boundary, so nothing is demanded');
+});
+
+test('carried is not delivered — a download into the wrong directory is a violation', () => {
+  // The blind spot this pins: the artifact name matches, so the cheap half is
+  // happy, and the file lands in `state/` where `consume-step` never looks.
+  // Re-pointing a download path is the original defect one layer over.
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': pipelineWorkflow({
+      upload: '.run/decisions.json',
+      download: 'state',
+      downloadPath: 'state',
+    }),
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, false, 'the file is uploaded but never lands where the reader looks');
+  assert.match(result.violations[0].rule, /never downloads it into \.run\//);
+});
+
+test('an upload in a third job does not cover a boundary it does not span', () => {
+  // The other blind spot: unioning uploads across the whole workflow passed a
+  // pipeline whose upload lived in a job running *after* the consumer.
+  const workflow = [
+    'name: pipeline',
+    'jobs:',
+    '  produce:',
+    '    steps:',
+    '      - run: node scripts/produce-step.mjs',
+    '  consume:',
+    '    needs: produce',
+    '    steps:',
+    '      - run: node scripts/consume-step.mjs',
+    '  archive:',
+    '    needs: consume',
+    '    steps:',
+    `      - uses: actions/upload-artifact@${SHA}`,
+    '        with:',
+    '          name: state',
+    '          path: .run/decisions.json',
+    '',
+  ].join('\n');
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': workflow,
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, false, 'the upload is in a job the consumer does not depend on');
+  assert.match(result.violations[0].rule, /no upload carries it/);
+});
+
+test('two steps in one job share a directory, so nothing has to be carried', () => {
+  // The false positive this rules out: demanding an artifact for a handoff that
+  // never crosses a boundary. A check that cries wolf gets disabled.
+  const workflow = [
+    'name: pipeline',
+    'jobs:',
+    '  both:',
+    '    steps:',
+    '      - run: node scripts/produce-step.mjs',
+    '      - run: node scripts/consume-step.mjs',
+    '',
+  ].join('\n');
+  const root = syntheticRoot({
+    'scripts/produce-step.mjs': WRITES_DECISIONS,
+    'scripts/consume-step.mjs': READS_DECISIONS,
+    '.github/workflows/pipeline.yml': workflow,
+  });
+  const result = checkArtifactHandoff(root);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.equal(result.checked, 1, 'the read was still counted, so the pass is not vacuous');
+});
+
+test('the repository carries every cross-job file, and the check is not vacuous', () => {
+  const result = checkArtifactHandoff(ROOT);
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+  assert.ok(
+    result.checked >= 6,
+    `the pipeline has at least six cross-job handoffs; saw ${result.checked}, which suggests the scan found nothing`,
+  );
 });
 
 /* ---------------------------------------------------------- the real repo --- */

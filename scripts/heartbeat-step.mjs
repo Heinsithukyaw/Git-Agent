@@ -9,6 +9,12 @@
  * disabled by GitHub. The failure then becomes permanent, and it becomes
  * permanent *silently*, which is the worst version of it.
  *
+ * The same argument covers the second cause: `commit` runs and does not succeed.
+ * The most important instance is `commit-step` deliberately publishing nothing
+ * because the narrate stage delivered no decision set — refusing to publish is
+ * right, but a refusal that leaves the repository untouched is how the schedule
+ * dies. So this job covers both, and `FETCH_RESULT`/`COMMIT_RESULT` say which.
+ *
  * So a failed run still writes:
  *
  *   - the heartbeat, with `consecutive_failures` incremented, which is the
@@ -67,9 +73,26 @@ function noteFailure(heartbeat, reason) {
   writeIfChanged(README, next);
 }
 
+/**
+ * Why this run produced nothing.
+ *
+ * Built here rather than passed in as a pre-rendered string, so the wording
+ * lives beside the job it describes and a new cause cannot silently reuse
+ * another one's text. `fetch` is checked first on purpose: when it fails, the
+ * `commit` job is *skipped* rather than failed, and reporting `skipped` as the
+ * cause would name the wrong job.
+ */
+function reasonFor(env) {
+  const fetch = (env.FETCH_RESULT ?? '').trim();
+  const commit = (env.COMMIT_RESULT ?? '').trim();
+  if (fetch && fetch !== 'success') return `The fetch job did not produce a payload (result: ${fetch}).`;
+  if (commit && commit !== 'success') return `The commit job did not publish a digest (result: ${commit}).`;
+  return 'The run did not complete.';
+}
+
 function main() {
   const status = (process.env.HEARTBEAT_STATUS ?? 'failed').toLowerCase();
-  const reason = process.env.HEARTBEAT_REASON ?? 'The fetch step produced no payload.';
+  const reason = reasonFor(process.env);
 
   const heartbeat = bump(status);
   writeIfChanged(HEARTBEAT, heartbeat);

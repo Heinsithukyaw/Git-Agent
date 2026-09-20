@@ -13,9 +13,11 @@
  *      explicit `--force`.
  *   2. **The credential is masked before it is used.** A third-party key is not
  *      on the platform's auto-redaction list, so it is registered here.
- *   3. **Record the host, never the URL.** `data/endpoint.json` is committed to
- *      a repository that may be public, and a base URL can carry a deployment
- *      id or a path segment that was never meant to be published.
+ *   3. **Record what the endpoint does, never which endpoint it is.** The record
+ *      is committed as `data/endpoint.json` and also travels as a workflow
+ *      artifact, and both are readable on a public repository. Neither the host
+ *      nor the model is stored or printed — the endpoint is the user's own
+ *      business (I8). See `lib/probe.mjs` for what that costs and why it wins.
  *
  * A probe failure is not a run failure. It writes a record saying what failed
  * and exits 0, because the point is to know, not to pass.
@@ -56,14 +58,19 @@ async function main() {
     return;
   }
 
-  console.log(`host: ${record.host ?? '(could not parse)'}`);
-  console.log(`model: ${record.model ?? '(unset)'}`);
   for (const [name, supported] of Object.entries(record.capabilities ?? {})) {
     console.log(`  ${supported ? 'yes' : 'no '}  ${name}`);
   }
   if (record.timings?.chat_ms !== undefined) console.log(`chat round-trip: ${record.timings.chat_ms} ms`);
-  if (record.error) console.warn(`::warning::endpoint probe failed: ${record.error}`);
-  console.log(`recorded: ${path.join(RUN_DIR, 'endpoint.json')} (host only — the URL is never stored)`);
+  // The kind and the status, never the endpoint's own text — this log is public
+  // on a public repository. See `lib/probe.mjs`.
+  if (record.error) {
+    console.warn(
+      `::warning::endpoint probe failed (${record.error.kind}` +
+        `${record.error.status ? ` HTTP ${record.error.status}` : ''})`,
+    );
+  }
+  console.log(`recorded: ${path.join(RUN_DIR, 'endpoint.json')} (capabilities only — no host, no model)`);
 }
 
 main().catch((err) => {
