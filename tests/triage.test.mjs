@@ -417,33 +417,46 @@ test('a 4xx that is not 408 or 429 is permanent, so it is not retried', async ()
 });
 
 test('a rejected request is not retried, and its body is kept as a diagnostic', async () => {
-  // The body below is the one the live service actually returns — measured, not
-  // invented. An earlier version of this test stubbed
+  // Both bodies below are the ones the live service actually returns — measured,
+  // not invented. An earlier version of this test stubbed
   // `{"detail":"model: field required"}`, which names the offending field. The
-  // real body is generic and names nothing. That is the same mistake the header
-  // of this file warns about: a fixture asserting a shape production cannot
-  // produce, so the test proved the stub rather than the contract.
+  // real body for a structurally invalid request names nothing. That is the same
+  // mistake the header of this file warns about: a fixture asserting a shape
+  // production cannot produce, so the test proved the stub rather than the
+  // contract.
   //
-  // The status is 400, not the 422 the API reference documents. Both measured.
-  // The consequence for the code is that the captured body is a diagnostic aid
-  // and not the "which field failed" guarantee its comment used to claim.
-  const REAL_BODY = '{"detail":{"error_type":"api_usage_error","message":"Invalid request."}}';
-  let calls = 0;
-  const realFetch = globalThis.fetch;
-  globalThis.fetch = async () => {
-    calls += 1;
-    return { ok: false, status: 400, headers: { get: () => null }, text: async () => REAL_BODY };
-  };
-  try {
-    await assert.rejects(
-      typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
-      /400.*api_usage_error/,
-      'the body is captured into the error even though it is generic',
-    );
-  } finally {
-    globalThis.fetch = realFetch;
+  // The status is 400, not the 422 the API reference documents. Measured.
+  const CASES = [
+    {
+      why: 'a structurally invalid request names nothing',
+      body: '{"detail":{"error_type":"api_usage_error","message":"Invalid request."}}',
+      expect: /400.*api_usage_error/,
+    },
+    {
+      why: 'an unknown model value is named exactly, so the body is the whole diagnosis',
+      body: '{"detail":{"error_type":"api_usage_error","message":"Unknown model: gpt-4o"}}',
+      expect: /400.*Unknown model: gpt-4o/,
+    },
+  ];
+
+  for (const c of CASES) {
+    let calls = 0;
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return { ok: false, status: 400, headers: { get: () => null }, text: async () => c.body };
+    };
+    try {
+      await assert.rejects(
+        typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
+        c.expect,
+        c.why,
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(calls, 1, 'a rejected request cannot be fixed by retrying it');
   }
-  assert.equal(calls, 1, 'a rejected request cannot be fixed by retrying it');
 });
 
 test('a retry-after header is honoured over the default backoff', async () => {

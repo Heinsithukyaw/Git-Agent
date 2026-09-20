@@ -62,8 +62,11 @@ and that is enforced by GitHub, not by discipline.
    layer that answers the two questions the rules cannot — do we import the
    vulnerable component, and does it reach a trust boundary — one atomic question
    at a time, and returns typed values rather than prose. It is **off by default**,
-   and turning it on changes nothing else: the rules tier still decides everything
-   it can, and the model still writes the digest. Set `JEV_ENABLED=true`,
+   and turning it on does not couple it to anything else: the rules tier still
+   decides everything it can, and narration is still the separate, optional layer
+   above. **The typed layer needs no chat model, and the chat model needs no typed
+   layer** — a digest with `JEV_ENABLED=true` and no `LLM_API_KEY` is complete, just
+   without the prose paragraph. Set `JEV_ENABLED=true`,
    `JEV_BASE_URL` (the layer's root, including its version prefix — the endpoint
    called is `{JEV_BASE_URL}/systemone`), the `JEV_API_KEY` secret, and optionally
    `JEV_MODEL` (default `jev-latest`).
