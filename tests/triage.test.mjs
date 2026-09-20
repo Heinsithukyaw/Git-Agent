@@ -10,9 +10,12 @@
  *   2. **Thresholding is code.** The model returns typed values; the comparison
  *      against τ happens here, and is replayable.
  *   3. **The request the code sends is the request the API documents.** Nothing
- *      asserted that, and a `422`-on-every-call bug shipped because of it. A
- *      stubbed response cannot catch it: the stub is wrong in the same
- *      direction as the code, so it stays green forever.
+ *      asserted that, and a request that was rejected on every call shipped
+ *      because of it. A stubbed response cannot catch it: the stub is wrong in
+ *      the same direction as the code, so it stays green forever.
+ *   4. **A question with no premise is not asked.** The band catches a model
+ *      that cannot tell; it cannot catch a question about an empty list, whose
+ *      confident `no` would silently clear a real advisory.
  */
 
 import { test } from 'node:test';
@@ -21,6 +24,7 @@ import {
   DECISIONS,
   TAU_DEFAULT,
   DEFAULT_TYPED_MODEL,
+  answerableQuestions,
   rulesDecide,
   compose,
   severityScore,
@@ -215,6 +219,7 @@ test('an absent answer escalates — it is never read as a no', () => {
   const missing = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.9 } }, modelVersion: 'm' } });
   assert.equal(missing.decision, DECISIONS.UNCERTAIN, 'a dropped answer must not clear a real advisory');
   assert.equal(missing.typed.unsure, null, 'nothing was called, so nothing is recorded as uncalled');
+  assert.deepEqual(missing.typed.unasked, [], 'a hand-built result claims every question was asked');
   assert.match(missing.reason, /nothing usable/);
 
   const malformed = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { noul: 0.9 }, reaches_a_trust_boundary: { noul: 'not a number' } }, modelVersion: 'm' } });
@@ -227,6 +232,7 @@ test('a decisive pair above tau is act, and the model version is kept', () => {
   assert.equal(act.layer, 'typed');
   assert.equal(act.modelVersion, 'jev-1.13.0');
   assert.deepEqual(act.typed.unsure, [], 'nothing was unsure, and that is recorded as an empty list');
+  assert.deepEqual(act.typed.unasked, [], 'every question had a premise, and that is recorded too');
   assert.equal(act.typed.we_use_the_vulnerable_component, 0.9, 'the raw answers are kept, not a summary');
 });
 
@@ -317,7 +323,7 @@ test('the request body uses `model` as a string, which is what the API documents
 test('an unset model still sends a usable string, never undefined', async () => {
   const { seen } = await captureRequest(() => okResponse({ answers: {} }));
   assert.equal(seen[0].body.model, DEFAULT_TYPED_MODEL);
-  assert.equal(typeof seen[0].body.model, 'string', 'a dropped field is a 422, which is the bug again');
+  assert.equal(typeof seen[0].body.model, 'string', 'a dropped field is a rejected request, which is the bug again');
 });
 
 test('every question is asked as a noul, and the state carries the advisory', async () => {
@@ -410,25 +416,34 @@ test('a 4xx that is not 408 or 429 is permanent, so it is not retried', async ()
   }
 });
 
-test('a client error is not retried, and its body is kept because it names the bad field', async () => {
-  const { seen } = await (async () => {
-    const realFetch = globalThis.fetch;
-    const calls = [];
-    globalThis.fetch = async () => {
-      calls.push(1);
-      return { ok: false, status: 422, headers: { get: () => null }, text: async () => '{"detail":"model: field required"}' };
-    };
-    try {
-      await assert.rejects(
-        typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
-        /422.*model: field required/,
-      );
-    } finally {
-      globalThis.fetch = realFetch;
-    }
-    return { seen: calls };
-  })();
-  assert.equal(seen.length, 1, 'a 422 is the request being wrong, so retrying it cannot help');
+test('a rejected request is not retried, and its body is kept as a diagnostic', async () => {
+  // The body below is the one the live service actually returns — measured, not
+  // invented. An earlier version of this test stubbed
+  // `{"detail":"model: field required"}`, which names the offending field. The
+  // real body is generic and names nothing. That is the same mistake the header
+  // of this file warns about: a fixture asserting a shape production cannot
+  // produce, so the test proved the stub rather than the contract.
+  //
+  // The status is 400, not the 422 the API reference documents. Both measured.
+  // The consequence for the code is that the captured body is a diagnostic aid
+  // and not the "which field failed" guarantee its comment used to claim.
+  const REAL_BODY = '{"detail":{"error_type":"api_usage_error","message":"Invalid request."}}';
+  let calls = 0;
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return { ok: false, status: 400, headers: { get: () => null }, text: async () => REAL_BODY };
+  };
+  try {
+    await assert.rejects(
+      typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
+      /400.*api_usage_error/,
+      'the body is captured into the error even though it is generic',
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  assert.equal(calls, 1, 'a rejected request cannot be fixed by retrying it');
 });
 
 test('a retry-after header is honoured over the default backoff', async () => {
@@ -462,12 +477,137 @@ test('triage records the usage, so what the layer cost is auditable', async () =
   const realFetch = globalThis.fetch;
   globalThis.fetch = async () => okResponse({ answers: {}, model: 'jev-1.13.0', usage: { input_tokens: 7, output_tokens: 1 } });
   try {
+    // Usage is mapped and the pinned version is not, so the case is uncertain
+    // *and* the typed layer has something to ask about. The earlier version of
+    // this test used `usage: {}`, which no longer reaches the network at all —
+    // a question about an empty symbol list is not asked.
     const rows = await triage(
-      { observed_at: '2026-01-01T00:00:00.000Z', packages: [pkg({ usage: {} })], advisories: [advisory()] },
+      { observed_at: '2026-01-01T00:00:00.000Z', packages: [pkg({ pinned: null })], advisories: [advisory()] },
       { typed: { enabled: true, baseUrl: 'https://typed.invalid/v1', apiKey: 'k' } },
     );
     assert.equal(rows[0].typed_usage.input_tokens, 7);
     assert.equal(rows[0].model_version, 'jev-1.13.0');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+/* -------------------------------------------------------- the premise --- */
+
+/**
+ * The defect these tests close.
+ *
+ * Both questions compare the advisory against a list we supply, and either list
+ * can be empty. Asked about an empty list, the model answers `no` — decisively,
+ * because there is nothing to find. The band cannot catch it: `0.04` is not in
+ * the middle, it is a confident answer about zero things.
+ *
+ * So the rules tier's `uncertain` ("usage is unmapped — reachability unknown")
+ * became `watch` ("not on a path we use"), which is a verdict the rules tier had
+ * explicitly declined to reach. Measured against the live service, not theorised:
+ * that is what it returned.
+ */
+
+test('a question with no premise is not answerable, and one with a premise is', () => {
+  assert.deepEqual(answerableQuestions(pkg()), {
+    we_use_the_vulnerable_component: true,
+    reaches_a_trust_boundary: true,
+  });
+  assert.deepEqual(answerableQuestions(pkg({ usage: {} })), {
+    we_use_the_vulnerable_component: false,
+    reaches_a_trust_boundary: false,
+  });
+  // The two lists are independent, so one question can be askable while the
+  // other is not.
+  assert.deepEqual(answerableQuestions(pkg({ usage: { imported_symbols: ['merge'] } })), {
+    we_use_the_vulnerable_component: true,
+    reaches_a_trust_boundary: false,
+  });
+  // An absent package is the same as an empty usage map, not a crash.
+  assert.deepEqual(answerableQuestions(null), {
+    we_use_the_vulnerable_component: false,
+    reaches_a_trust_boundary: false,
+  });
+});
+
+test('with no premise at all, no request is sent', async () => {
+  const realFetch = globalThis.fetch;
+  let calls = 0;
+  globalThis.fetch = async () => {
+    calls += 1;
+    return okResponse({ answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.02 } } });
+  };
+  try {
+    const rows = await triage(
+      { observed_at: '2026-01-01T00:00:00.000Z', packages: [pkg({ usage: {} })], advisories: [advisory()] },
+      { typed: { enabled: true, baseUrl: 'https://typed.invalid/v1', apiKey: 'k' } },
+    );
+    assert.equal(calls, 0, 'a request whose every question is about an empty list can only be answered about nothing');
+    assert.equal(rows[0].decision, DECISIONS.UNCERTAIN);
+    assert.equal(rows[0].typed_usage, null, 'no call was made, so nothing was charged');
+    assert.equal(rows[0].model_version, null, 'and nothing answered, so there is no provenance to claim');
+    assert.deepEqual(
+      rows[0].typed.unasked.sort(),
+      ['reaches_a_trust_boundary', 'we_use_the_vulnerable_component'],
+      'the record says why it escalated, so nobody goes looking for a broken endpoint',
+    );
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('two decisive answers about an empty list are not a verdict', async () => {
+  const realFetch = globalThis.fetch;
+  // Exactly what the live service returned when asked about `usage: {}`.
+  globalThis.fetch = async () =>
+    okResponse({
+      answers: {
+        we_use_the_vulnerable_component: { type: 'noul', noul: 0.05 },
+        reaches_a_trust_boundary: { type: 'noul', noul: 0.04 },
+      },
+      model: 'stub',
+    });
+  try {
+    const rows = await triage(
+      { observed_at: '2026-01-01T00:00:00.000Z', packages: [pkg({ usage: {} })], advisories: [advisory()] },
+      { typed: { enabled: true, baseUrl: 'https://typed.invalid/v1', apiKey: 'k' } },
+    );
+    assert.equal(rows[0].decision, DECISIONS.UNCERTAIN, 'a confident no about nothing is not a confident no');
+    assert.match(rows[0].reason, /nothing to compare against/);
+    assert.match(rows[0].reason, /usage is unmapped/, 'the rules reason is kept, because it names the real gap');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+});
+
+test('a half-empty premise asks only the question that has one', async () => {
+  const realFetch = globalThis.fetch;
+  const bodies = [];
+  globalThis.fetch = async (url, init) => {
+    bodies.push(JSON.parse(init.body));
+    return okResponse({
+      answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.95 } },
+      model: 'stub',
+    });
+  };
+  try {
+    // Uncertain because the pinned version is unknown, so the premise gate is
+    // the only thing under test here.
+    const rows = await triage(
+      {
+        observed_at: '2026-01-01T00:00:00.000Z',
+        packages: [pkg({ pinned: null, usage: { imported_symbols: ['merge'] } })],
+        advisories: [advisory()],
+      },
+      { typed: { enabled: true, baseUrl: 'https://typed.invalid/v1', apiKey: 'k' } },
+    );
+    assert.deepEqual(
+      Object.keys(bodies[0].questions),
+      ['we_use_the_vulnerable_component'],
+      'the call-site question has no premise, so it is not in the request',
+    );
+    assert.equal(rows[0].decision, DECISIONS.UNCERTAIN, 'the unasked half still cannot be assumed');
+    assert.deepEqual(rows[0].typed.unasked, ['reaches_a_trust_boundary']);
   } finally {
     globalThis.fetch = realFetch;
   }

@@ -203,11 +203,22 @@ escalate; none of them resolves to a decision.
   imported, *or is unclear*", which instructs the model to answer 0 when it cannot
   tell. That removes the only input the escalation path depends on. "I can't tell"
   belongs in the middle of the `noul` value, and the criteria must leave it there.
+- **A question with no premise is not asked.** The band catches a model that
+  cannot tell. It cannot catch a question that has nothing to compare against:
+  asked whether the flaw is in one of the components we import, about a package
+  whose imported-symbol list is empty, the layer answers `0.04` — decisive, and
+  decisive about zero things. Composing that turned the rules tier's `uncertain`
+  ("usage is unmapped — reachability unknown") into `watch` ("not on a path we
+  use"), a verdict the rules tier had explicitly declined to reach.
+  `answerableQuestions()` drops those questions before the request is built, and
+  `compose()` escalates on the absent answer with a reason that names the gap
+  rather than blaming the endpoint. Measured against the live service, not
+  theorised.
 - **The request body is asserted, not assumed.** `tests/triage.test.mjs` pins
   `{model, questions, state}`, with `model` a **string** and `selectedModels`
   absent. A stubbed *response* cannot catch a wrong *request*: the stub is wrong
   in the same direction as the code, so it stays green forever. That is how a
-  request that failed validation on every call shipped with 161 tests passing.
+  request that was rejected on every call shipped with the whole suite passing.
 - **The retry policy is copied from the vendor's SDK, not invented.** Their
   default is 408, 429 and the **whole of 500–599**, with jittered backoff and
   `Retry-After` honoured up to a minute. A hand-picked 5xx list silently drops

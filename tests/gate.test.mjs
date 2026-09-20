@@ -189,9 +189,18 @@ test('the checked counts are reported, so a silent empty extract is visible', ()
 const UNCERTAIN_PAYLOAD = {
   observed_at: '2026-01-01T00:00:00.000Z',
   packages: [
-    // No imported symbols, so the rules cannot judge reachability and the case
-    // reaches the typed layer — which is the only path that matters here.
-    { name: 'lodash', ecosystem: 'npm', pinned: '4.17.15', usage: {} },
+    // Usage is mapped, because the typed layer needs a premise to be asked
+    // anything at all: a question about an empty symbol list is a question about
+    // nothing, and `answerableQuestions()` declines it. So the uncertainty here
+    // comes from the advisory instead — a range published only as commits, which
+    // version arithmetic cannot evaluate. That is a real shape, and it leaves the
+    // typed layer the only path that can move the case.
+    {
+      name: 'lodash',
+      ecosystem: 'npm',
+      pinned: '4.17.15',
+      usage: { imported_symbols: ['merge'], call_sites: ['src/a.ts:1'], runtime: 'node' },
+    },
   ],
   advisories: [
     {
@@ -201,7 +210,7 @@ const UNCERTAIN_PAYLOAD = {
       summary: 'prototype pollution',
       details: 'The merge helper does not guard against prototype pollution.',
       severity: '7.4',
-      affected: [{ type: 'ECOSYSTEM', introduced: '0', fixed: '4.17.21' }],
+      affected: [{ type: 'GIT', introduced: '0', fixed: '9f2c1a4' }],
     },
   ],
   releases: [],
