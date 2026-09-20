@@ -173,40 +173,61 @@ test('a typed answer in the middle of the range escalates instead of deciding', 
   const composed = compose({ rules: uncertainRules(), typed: typedWith(0.5, 0.5) });
   assert.equal(composed.decision, DECISIONS.UNCERTAIN);
   assert.match(composed.reason, /no signal/);
-  assert.equal(composed.typed.score, 0.5, 'the score is still recorded, so the band is auditable');
+  assert.deepEqual(
+    composed.typed.unsure.sort(),
+    ['reaches_a_trust_boundary', 'we_use_the_vulnerable_component'],
+    'both questions are recorded as uncalled, so the escalation is auditable',
+  );
   assert.ok(!('confidence' in composed.typed), 'a noul answer has no confidence to record');
 });
 
-test('two answers that disagree land in the band, because a mean cannot reconcile them', () => {
-  const composed = compose({ rules: uncertainRules(), typed: typedWith(1, 0) });
-  assert.equal(composed.decision, DECISIONS.UNCERTAIN, 'a definite yes and a definite no is not a maybe');
-  assert.equal(composed.typed.score, 0.5);
+test('the band is read per answer, so a decisive answer cannot vouch for an unsure one', () => {
+  // This is the case an average hides, and it is why the band is not on the
+  // mean. 1.0 next to 0.5 averages to 0.75, which looks confident — but the
+  // model said "yes and no are equally likely" about whether we even use the
+  // vulnerable component. Averaging a probability with its own negation is a
+  // third number that neither answer supports.
+  for (const [uses, reach] of [[1, 0.5], [0.5, 1], [0.95, 0.45], [0.45, 0.95]]) {
+    const composed = compose({ rules: uncertainRules(), typed: typedWith(uses, reach) });
+    assert.equal(
+      composed.decision,
+      DECISIONS.UNCERTAIN,
+      `uses=${uses} reach=${reach}: an answer in the middle must escalate even beside a decisive one`,
+    );
+  }
+});
+
+test('two decisive answers are composed as the conjunction the questions express', () => {
+  const rules = uncertainRules();
+  // We use the vulnerable component, and it is reachable: act.
+  assert.equal(compose({ rules, typed: typedWith(1, 1) }).decision, DECISIONS.ACT);
+  // We use it, but no call site handles untrusted input: watch. Both answers are
+  // decisive, so this is a verdict and not an escalation — the mean used to
+  // escalate it by accident, because 0.5 happened to be the midpoint.
+  assert.equal(compose({ rules, typed: typedWith(1, 0) }).decision, DECISIONS.WATCH);
+  // We do not use it: watch, whatever the second answer says.
+  assert.equal(compose({ rules, typed: typedWith(0.1, 0.1) }).decision, DECISIONS.WATCH);
+  assert.equal(compose({ rules, typed: typedWith(0.1, 1) }).decision, DECISIONS.WATCH);
 });
 
 test('an absent answer escalates — it is never read as a no', () => {
   const rules = uncertainRules();
   const missing = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { type: 'noul', noul: 0.9 } }, modelVersion: 'm' } });
   assert.equal(missing.decision, DECISIONS.UNCERTAIN, 'a dropped answer must not clear a real advisory');
-  assert.equal(missing.typed.score, null);
+  assert.equal(missing.typed.unsure, null, 'nothing was called, so nothing is recorded as uncalled');
   assert.match(missing.reason, /nothing usable/);
 
   const malformed = compose({ rules, typed: { answers: { we_use_the_vulnerable_component: { noul: 0.9 }, reaches_a_trust_boundary: { noul: 'not a number' } }, modelVersion: 'm' } });
   assert.equal(malformed.decision, DECISIONS.UNCERTAIN);
 });
 
-test('a decisive answer above tau is act, and a decisive one below the band is watch', () => {
+test('a decisive pair above tau is act, and the model version is kept', () => {
   const act = compose({ rules: uncertainRules(), typed: typedWith(0.9, 0.9) });
   assert.equal(act.decision, DECISIONS.ACT);
   assert.equal(act.layer, 'typed');
   assert.equal(act.modelVersion, 'jev-1.13.0');
-  assert.equal(act.typed.score, 0.9);
-
-  const watch = compose({ rules: uncertainRules(), typed: typedWith(0.4, 0.2) });
-  assert.equal(watch.decision, DECISIONS.WATCH);
-  assert.equal(watch.typed.score, 0.3);
-
-  const decisiveNo = compose({ rules: uncertainRules(), typed: typedWith(0.1, 0.1) });
-  assert.equal(decisiveNo.decision, DECISIONS.WATCH);
+  assert.deepEqual(act.typed.unsure, [], 'nothing was unsure, and that is recorded as an empty list');
+  assert.equal(act.typed.we_use_the_vulnerable_component, 0.9, 'the raw answers are kept, not a summary');
 });
 
 test('the band moves with tau, so there is still exactly one tunable parameter', () => {
@@ -219,10 +240,22 @@ test('the band moves with tau, so there is still exactly one tunable parameter',
   assert.equal(wide.decision, DECISIONS.ACT);
 });
 
+test('the band edges are exact, so a noul of exactly 0.2 is a decisive no', () => {
+  // `1 - 0.8` is `0.19999999999999996` in binary floating point, so the naive
+  // edge puts 0.2 *inside* the band. The vendor's example treats 0.2 as a no,
+  // and the boundary of a decision rule should be exact rather than almost.
+  const rules = uncertainRules();
+  assert.equal(compose({ rules, typed: typedWith(0.2, 0.2) }).decision, DECISIONS.WATCH);
+  assert.equal(compose({ rules, typed: typedWith(0.8, 0.8) }).decision, DECISIONS.ACT);
+  // And the two edges really are the boundary.
+  assert.equal(compose({ rules, typed: typedWith(0.201, 0.201) }).decision, DECISIONS.UNCERTAIN);
+  assert.equal(compose({ rules, typed: typedWith(0.799, 0.799) }).decision, DECISIONS.UNCERTAIN);
+});
+
 test('a tau below the middle closes the band instead of inverting it', () => {
   // "Act on a coin-flip" is a coherent setting: it leaves no middle to
   // escalate. What it must not do is produce a band with its edges swapped,
-  // which would swallow every score and decide nothing at all.
+  // which would swallow every answer and decide nothing at all.
   const rules = uncertainRules();
   const atMiddle = compose({ rules, typed: typedWith(0.5, 0.5), tau: 0.4 });
   assert.equal(atMiddle.decision, DECISIONS.ACT, 'with no band left, the threshold is the whole rule');
@@ -296,6 +329,26 @@ test('every question is asked as a noul, and the state carries the advisory', as
   assert.equal(state.ours.package, 'lodash');
 });
 
+test('the criteria must not tell the model that unclear means no', async () => {
+  // The band depends entirely on the model being able to answer "I can't tell"
+  // by landing in the middle. A `false` description that folds "unclear" into
+  // "no" removes that, and the escalation path silently stops firing — so this
+  // is a correctness property of the criteria, not a wording preference.
+  const { seen } = await captureRequest(() => okResponse({ answers: {} }));
+  const q = seen[0].body.questions.we_use_the_vulnerable_component;
+  assert.ok(q.criteria?.true && q.criteria?.false, 'the subtle boundary is why criteria exist here');
+  assert.equal(typeof q.criteria.true.what, 'string');
+  assert.equal(typeof q.criteria.false.what, 'string');
+  assert.doesNotMatch(
+    q.criteria.false.what,
+    /unclear/i,
+    'the no-side *definition* must not fold "unclear" into "no" — the middle of the range is where that goes',
+  );
+  assert.match(q.criteria.false.not_for, /unclear/i, 'and it says so explicitly, on the no side');
+  assert.ok(Array.isArray(q.criteria.true.examples), 'each side is pinned with an example, as documented');
+  assert.ok(Array.isArray(q.criteria.false.examples));
+});
+
 test('the versioned model and the token usage are read off the response', async () => {
   const { result } = await captureRequest(() =>
     okResponse({
@@ -309,13 +362,51 @@ test('the versioned model and the token usage are read off the response', async 
   assert.equal(result.answers.we_use_the_vulnerable_component.noul, 0.91);
 });
 
-test('overload and rate limiting are retried, and 529 is not mistaken for permanent', async () => {
-  for (const status of [429, 529, 503]) {
-    const { seen } = await captureRequest(
-      (n) => (n === 1 ? { ok: false, status, headers: { get: () => '0' }, text: async () => 'busy' } : okResponse({ answers: {} })),
-      { retries: 1 },
-    );
+/**
+ * A response that fails once, then succeeds.
+ *
+ * The header lookup is deliberately name-aware. A stub whose `get` returns a
+ * fixed string for every name makes the test read a `retry-after-ms` that the
+ * server never sent, which is the same class of mistake as a fixture asserting
+ * a shape the API cannot produce.
+ */
+const failsOnce = (status, headers = {}) => (n) =>
+  n === 1
+    ? {
+        ok: false,
+        status,
+        headers: { get: (name) => headers[String(name).toLowerCase()] ?? null },
+        text: async () => 'busy',
+      }
+    : okResponse({ answers: {} });
+
+test('every retryable status is retried, including the 5xx codes a hand-picked list drops', async () => {
+  // 501 and 507 are the point: a hand-picked `{500, 502, 503, 504, 529}` retries
+  // 503 and 529 but treats these as permanent, while the vendor's SDK retries the
+  // whole 500–599 range. `retry-after: 0` keeps the test fast.
+  for (const status of [408, 429, 500, 501, 503, 507, 529, 599]) {
+    const { seen } = await captureRequest(failsOnce(status, { 'retry-after': '0' }), { retries: 1 });
     assert.equal(seen.length, 2, `HTTP ${status} should have been retried`);
+  }
+});
+
+test('a 4xx that is not 408 or 429 is permanent, so it is not retried', async () => {
+  for (const status of [400, 401, 403, 404]) {
+    const realFetch = globalThis.fetch;
+    let calls = 0;
+    globalThis.fetch = async () => {
+      calls += 1;
+      return { ok: false, status, headers: { get: () => null }, text: async () => 'nope' };
+    };
+    try {
+      await assert.rejects(
+        typedDecide(advisory(), pkg(), { baseUrl: 'https://typed.invalid/v1', apiKey: 'k', retries: 2 }),
+        new RegExp(`HTTP ${status}`),
+      );
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.equal(calls, 1, `HTTP ${status} is the request being wrong, so retrying cannot help`);
   }
 });
 
@@ -342,12 +433,29 @@ test('a client error is not retried, and its body is kept because it names the b
 
 test('a retry-after header is honoured over the default backoff', async () => {
   const started = Date.now();
-  const { seen } = await captureRequest(
-    (n) => (n === 1 ? { ok: false, status: 429, headers: { get: () => '1' }, text: async () => '' } : okResponse({ answers: {} })),
-    { retries: 1 },
-  );
+  const { seen } = await captureRequest(failsOnce(429, { 'retry-after': '1' }), { retries: 1 });
   assert.equal(seen.length, 2);
   assert.ok(Date.now() - started >= 900, 'a retry-after of 1s must actually be waited out');
+});
+
+test('with no retry-after at all, the backoff still waits', async () => {
+  // The case the mutation test found uncovered. `Number(null)` is `0`, not
+  // `NaN`, so reading an absent header with `Number(...)` yields a zero-second
+  // delay — retries fire immediately and the backoff and jitter do nothing.
+  // Every other retry test here sends a header, so none of them noticed.
+  const started = Date.now();
+  const { seen } = await captureRequest(failsOnce(503), { retries: 1 });
+  assert.equal(seen.length, 2);
+  assert.ok(Date.now() - started >= 250, 'an absent header must not read as a zero-second delay');
+});
+
+test('a retry-after beyond the cap falls back to backoff instead of waiting it out', async () => {
+  // A server asking for an hour is a server to skip, not to wait on. The vendor's
+  // SDK caps this at a minute and backsoffs beyond that.
+  const started = Date.now();
+  const { seen } = await captureRequest(failsOnce(429, { 'retry-after': '3600' }), { retries: 1 });
+  assert.equal(seen.length, 2);
+  assert.ok(Date.now() - started < 5_000, 'an hour-long retry-after must not be honoured literally');
 });
 
 test('triage records the usage, so what the layer cost is auditable', async () => {

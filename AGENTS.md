@@ -177,26 +177,43 @@ deterministic template.
 
 Enabling a decision layer **adds** a tier; it never switches providers.
 
-**The typed layer's decision rule is a band, not a threshold.** A `noul` answer
+**The typed layer's decision rule is a band, read per answer.** A `noul` answer
 is a probability that carries its own certainty, so a value near the middle is
 *no signal* rather than medium intensity — `>= 0.5` is the wrong way to read one,
 and a single threshold therefore has to guess in exactly the region where
-guessing is least defensible. The band is symmetric about the middle and its
-width is set by τ, so there is still exactly one tunable parameter. A score
-inside the band, an absent answer, and two answers that disagree all escalate:
-none of them resolves to a decision.
+guessing is least defensible. The band's edges are τ and `1 - τ`, so there is
+still exactly one tunable parameter.
 
-- **Enforced by:** `tests/triage.test.mjs`, the `noul` band tests.
+**Per answer, never on an average of them.** An earlier version averaged the two
+values and banded the mean, which quietly undoes the band: a decisive `1.0` beside
+an unsure `0.5` averages to `0.75` and reads as confident, even though the model
+said yes and no were equally likely. Averaging a probability with its own negation
+is not a summary of the two — it is a third number neither answer supports. An
+answer inside the band, an absent answer, and an answer that will not parse all
+escalate; none of them resolves to a decision.
+
+- **Enforced by:** `tests/triage.test.mjs`, the `noul` band tests, including the
+  case an average hides.
 - **Why it erodes:** `noul` has no `confidence` field. Reading one anyway does
   not fail — it returns `undefined` — and the reflexive `?? 1` guard turns "no
   such field" into *maximum certainty*, which silently disables the check it was
   written to perform. A fallback on a response field the layer is expected to
   send must default to **escalate**, never to **permit**.
+- **The criteria must not close the band.** The `false` side once read "not
+  imported, *or is unclear*", which instructs the model to answer 0 when it cannot
+  tell. That removes the only input the escalation path depends on. "I can't tell"
+  belongs in the middle of the `noul` value, and the criteria must leave it there.
 - **The request body is asserted, not assumed.** `tests/triage.test.mjs` pins
   `{model, questions, state}`, with `model` a **string** and `selectedModels`
   absent. A stubbed *response* cannot catch a wrong *request*: the stub is wrong
   in the same direction as the code, so it stays green forever. That is how a
   request that failed validation on every call shipped with 161 tests passing.
+- **The retry policy is copied from the vendor's SDK, not invented.** Their
+  default is 408, 429 and the **whole of 500–599**, with jittered backoff and
+  `Retry-After` honoured up to a minute. A hand-picked 5xx list silently drops
+  501, 507 and the rest. Note also that `Number(null)` is `0`, not `NaN`: reading
+  an absent header with `Number(...)` yields a zero-second delay and disables the
+  backoff entirely.
 
 ### I10 — The web surface holds no key and calls no model
 

@@ -288,9 +288,10 @@ test('the typed layer records its numbers structurally, not in the prose', async
     reaches_a_trust_boundary: { type: 'noul', noul: 0.9 },
   });
   const row = decisions[0];
-  assert.equal(typeof row.typed.score, 'number', 'the score must be recorded, not discarded');
-  assert.equal(row.tau, 0.6, 'tau is recorded on the row');
-  assert.equal(row.typed.score, 0.925, 'the score is the mean of the two answers, rounded');
+  assert.equal(row.typed.we_use_the_vulnerable_component, 0.95, 'the raw answer is kept, not a summary of it');
+  assert.equal(row.typed.reaches_a_trust_boundary, 0.9);
+  assert.deepEqual(row.typed.unsure, [], 'both answers were decisive, and that is recorded');
+  assert.equal(row.tau, 0.8, 'tau is recorded on the row');
   assert.equal(row.model_version, 'stub-2026-01-01', 'the resolved model is read from `model`');
   assert.ok(!('confidence' in row.typed), 'a noul answer carries no confidence to record');
   assert.doesNotMatch(row.reason, /\d/, 'a number in the reason is a sentence the gate must reject');

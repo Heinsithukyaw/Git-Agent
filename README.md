@@ -242,11 +242,13 @@ rule at all. The short version:
 - **The documented configuration surface is the whole configuration surface.** Every
   variable a workflow asks for is in the table, and every variable the code reads is
   delivered by a workflow. Both halves are checked, because both had already drifted.
-- **The optional typed layer decides with a band, not a threshold.** Its answers are
+- **The optional typed layer decides with a band, read per answer.** Its answers are
   probabilities that carry their own certainty, so a value near the middle is *no
-  signal* rather than medium intensity. A score inside the band, an absent answer, and
-  two answers that disagree all escalate to a human instead of resolving — and a
-  fallback on a field the layer is expected to send escalates too, never permits.
+  signal* rather than medium intensity — and averaging the two answers would hide
+  exactly that, so each is read on its own. An answer inside the band, an absent
+  answer, and an answer that will not parse all escalate to a human instead of
+  resolving; a fallback on a field the layer is expected to send escalates too, never
+  permits.
 - **Commands are parsed, never interpreted.** An allowlisted verb, an argument that must
   appear in the watch list, and an author gate that exits rather than warns. The cheap
   workflow-level guard names exactly the same three associations as the real gate, so it
