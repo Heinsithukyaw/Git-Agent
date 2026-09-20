@@ -108,6 +108,7 @@ jobs:
           LLM_API_KEY: ${{ secrets.LLM_API_KEY }}
           LLM_BASE_URL: ${{ vars.LLM_BASE_URL }}
           LLM_MODEL: ${{ vars.LLM_MODEL }}
+          LLM_USER_AGENT: ${{ vars.LLM_USER_AGENT }}
           LLM_TOKEN_BUDGET: ${{ vars.LLM_TOKEN_BUDGET }}
           JEV_ENABLED: ${{ vars.JEV_ENABLED }}
           JEV_API_KEY: ${{ secrets.JEV_API_KEY }}

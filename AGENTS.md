@@ -153,6 +153,7 @@ Configuration surface, and nothing more:
 | `JEV_API_KEY` | secret, optional | only when `JEV_ENABLED` is true |
 | `LLM_BASE_URL` | variable | any OpenAI-compatible root |
 | `LLM_MODEL` | variable | model or deployment name |
+| `LLM_USER_AGENT` | variable, optional | the client identity to send, when the endpoint gates on one |
 | `LLM_TOKEN_BUDGET` | variable | tokens per run, default `60000` |
 | `JEV_ENABLED` | variable | `false` (default) |
 | `JEV_BASE_URL` | variable | the typed layer's root, including its version prefix — the endpoint called is `POST {JEV_BASE_URL}/systemone`; only when `JEV_ENABLED` is true |
@@ -167,6 +168,15 @@ Configuration surface, and nothing more:
   table (`JEV_BASE_URL`, `LLM_TOKEN_BUDGET`), and one was read by the code and
   delivered by no workflow (`JEV_MODEL`). "And nothing more" is exactly the kind
   of claim that needs a check rather than a promise.
+
+`LLM_USER_AGENT` is the one name here that describes the *transport* rather than
+the model, and it earns its place the same way the others do. A gateway can reject a
+request before it looks at the key: a relay behind a whitelist of known client
+identities answers anything else with `401 unauthorized client detected`, so a valid
+key is refused and the error names the client, not the credential. A client that
+cannot vary its identity cannot use such a provider at all, and no amount of
+rotating the key changes that. The header is sent only when the variable is set, so
+an endpoint that does not gate sees a byte-identical request.
 
 ### I9 — The agent is fully useful with no model key
 

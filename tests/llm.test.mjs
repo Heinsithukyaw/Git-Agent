@@ -123,6 +123,50 @@ test('an over-budget call is refused, and is not retried', async () => {
   assert.equal(calls, 1, 'a budget overrun is not transient');
 });
 
+/* ------------------------------------------------- the client identity --- */
+
+test('no user-agent is sent when the knob is unset, so nothing changed for endpoints that do not gate', async () => {
+  // The knob is additive, and this is the test that keeps it additive. A gateway
+  // that never looked at the client identity must see the request it saw before
+  // `LLM_USER_AGENT` existed.
+  const { seen } = await capture(() => ok({ choices: [{ message: { content: 'hi' } }] }));
+  assert.deepEqual(Object.keys(seen[0].init.headers).sort(), ['authorization', 'content-type']);
+  assert.equal('user-agent' in seen[0].init.headers, false);
+});
+
+test('a configured user-agent is sent verbatim, and moves nothing else', async () => {
+  // The live case: a relay answered `401 unauthorized client detected` — naming
+  // the *client* — for a valid key, and answered `200` once the identity was one
+  // it recognised. The identity is the whole variable.
+  const ua = 'claude-cli/2.0.0 (external, cli)';
+  const plain = await capture(() => ok({ choices: [{ message: { content: 'hi' } }] }));
+  const gated = await capture(() => ok({ choices: [{ message: { content: 'hi' } }] }), {
+    env: { ...ENV, LLM_USER_AGENT: ua },
+  });
+
+  assert.equal(gated.seen[0].init.headers['user-agent'], ua);
+  assert.equal(gated.seen[0].url, plain.seen[0].url, 'the endpoint is untouched');
+  assert.deepEqual(gated.seen[0].body, plain.seen[0].body, 'the knob moves the identity and nothing else');
+  assert.equal(
+    gated.seen[0].init.headers.authorization,
+    plain.seen[0].init.headers.authorization,
+    'the credential is unaffected by the identity',
+  );
+});
+
+test('the client identity is transport, not a credential', () => {
+  // It must not be required — an endpoint that does not gate should never be
+  // forced to set one — and it must not substitute for the key.
+  assert.equal(config({}).userAgent, '');
+  assert.equal(config({ LLM_USER_AGENT: '  spaced/1.0  ' }).userAgent, 'spaced/1.0');
+  assert.equal(isConfigured({ ...ENV, LLM_USER_AGENT: 'x' }), true);
+  assert.equal(
+    isConfigured({ LLM_BASE_URL: 'https://x/v1', LLM_MODEL: 'm', LLM_USER_AGENT: 'x' }),
+    false,
+    'an identity does not stand in for a key',
+  );
+});
+
 /* ------------------------------------------------------------- the log --- */
 
 test('a failed call never carries the credential into its message', async () => {

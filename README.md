@@ -43,14 +43,22 @@ and that is enforced by GitHub, not by discipline.
 1. **Use this template**, or copy the repository.
 2. **Edit `data/stack.json`** — the packages you want watched, and for each one the
    symbols you import. This file is both the watch list and the argument allowlist.
-3. **Set two repository variables** (Settings → Secrets and variables → Actions →
-   Variables). Neither is required for the agent to work:
+3. **Set the repository variables** (Settings → Secrets and variables → Actions →
+   Variables). None is required for the agent to work:
 
    | Name | Value |
    |---|---|
    | `LLM_BASE_URL` | any chat-completions-compatible root, e.g. `https://host/v1` |
    | `LLM_MODEL` | the model or deployment name |
    | `AGENT_LANG` | reply language, default `en` |
+   | `LLM_USER_AGENT` | only when the endpoint gates on client identity — see below |
+
+   Some gateways reject a request *before* they read the key: a relay behind a
+   whitelist of known client identities answers anything else with
+   `401 unauthorized client detected`, so a valid key is refused and the error names
+   the client rather than the credential. Set `LLM_USER_AGENT` to an identity that
+   gateway accepts and the header is sent; leave it unset and the request is
+   byte-identical to what it was before.
 
 4. **Optionally set one secret** — `LLM_API_KEY`. Without it, the agent still runs: the
    rules tier produces the whole digest and no model is contacted. That is a complete
