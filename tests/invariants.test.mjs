@@ -1825,34 +1825,71 @@ test('no page holds a credential, calls a model, or dispatches a workflow', () =
   assert.equal(checkPagesHoldNoKey(ROOT).ok, true);
 });
 
-test('I10 refuses each of the three things a page must never do, and passes a clean one', () => {
+/**
+ * A published surface in the shape `render-site.mjs` actually writes: a page that
+ * is a *shell*, and the data file the shell fetches at runtime.
+ *
+ * The fixture has to carry both halves, because the check now reads both. A
+ * fixture that omits one tests the path that cannot fail — the same defect as a
+ * hand-written digest table that left the advisory id bare and made a real
+ * element look wrapped.
+ */
+function publishedSurface({ page = '<main id="digest"></main>', data = '{"html":"<p>a digest</p>"}' } = {}) {
+  return syntheticRoot({ 'site/index.html': page, 'site/api/digest.json': data });
+}
+
+test('I10 refuses each of the three things the published surface must never do', () => {
   const cases = [
     ['<meta name="build" content="LLM_API_KEY">', /never hold a credential/],
     ["fetch('https://api.example.com/v1/chat')", /never call a model/],
     ['<button data-action="workflow_dispatch">', /never trigger a workflow/],
   ];
   for (const [body, expected] of cases) {
-    const result = checkPagesHoldNoKey(syntheticRoot({ 'site/index.html': `<html>${body}</html>` }));
+    const result = checkPagesHoldNoKey(publishedSurface({ page: `<html>${body}</html>` }));
     assert.equal(result.ok, false, `${body} must be refused`);
     assert.match(result.violations[0].rule, expected);
   }
 
   // The control. Without it, a check that refused everything would satisfy the
   // three assertions above and read as strict rather than as broken.
-  const clean = checkPagesHoldNoKey(
-    syntheticRoot({ 'site/index.html': '<html><p>a page</p></html>' }),
-  );
-  assert.equal(clean.ok, true, 'a clean page must pass');
-  assert.equal(clean.checked, 1);
+  const clean = checkPagesHoldNoKey(publishedSurface());
+  assert.equal(clean.ok, true, 'a clean surface must pass');
+  assert.equal(clean.checked, 2, 'one page and one data file');
 });
 
-test('I10 fails closed when there is no page to look at', () => {
-  // `site/` is committed and both workflows render before this runs, so no pages
-  // means the check could not look. Reporting ok would let the rule stop being
-  // enforced, silently, the moment the render step was dropped.
-  const result = checkPagesHoldNoKey(syntheticRoot({ 'data/stack.json': '{}' }));
-  assert.equal(result.ok, false, 'an absent site/ must not read as a pass');
-  assert.match(result.violations[0].rule, /no page to check/);
+test('I10 reads the data surface, not only the shell that fetches it', () => {
+  // The page is a shell: `index.html` carries a loading placeholder and fetches
+  // `./api/digest.json` at runtime, assigning the result with `innerHTML`. Every
+  // byte of content on the served page therefore arrives through `site/api/`, and
+  // the check read only the file that carries none of it.
+  //
+  // Measured before the widening, with the same text in both places: three
+  // violations in `site/index.html` and none in `site/api/digest.json`. The
+  // control below is what makes this test able to fail.
+  const poison = "fetch('https://api.example.com/v1/chat/completions')";
+  const result = checkPagesHoldNoKey(publishedSurface({ data: JSON.stringify({ html: poison }) }));
+  assert.equal(result.ok, false, 'a model call in the published data must be refused');
+  assert.match(result.violations[0].file, /api\/digest\.json/);
+  assert.match(result.violations[0].rule, /never call a model/);
+
+  const clean = checkPagesHoldNoKey(publishedSurface({ data: '{"html":"<p>2 advisories</p>"}' }));
+  assert.equal(clean.ok, true, 'the same file without the poison must pass');
+});
+
+test('I10 fails closed on either half of the surface', () => {
+  // `site/` is committed and both workflows render before this runs, so an empty
+  // half means the check could not look. Reporting ok would let the rule stop
+  // being enforced, silently, the moment the render step was dropped from a
+  // workflow.
+  const noSite = checkPagesHoldNoKey(syntheticRoot({ 'data/stack.json': '{}' }));
+  assert.equal(noSite.ok, false, 'an absent site/ must not read as a pass');
+  assert.match(noSite.violations[0].rule, /no page to check/);
+
+  // A shell with no data beside it: the served page would load nothing, and the
+  // check would be blind to the half that carries the content.
+  const noData = checkPagesHoldNoKey(syntheticRoot({ 'site/index.html': '<main></main>' }));
+  assert.equal(noData.ok, false, 'an absent data surface must not read as a pass');
+  assert.match(noData.violations[0].rule, /no published data to check/);
 });
 
 test('the report puts each check own summary on its own line', () => {
@@ -1868,6 +1905,7 @@ test('the report puts each check own summary on its own line', () => {
   const line = out.split('\n').find((l) => l.includes('I10 pages hold no key'));
   assert.ok(line, 'I10 must appear in the report');
   assert.match(line, /page\(s\) checked/);
+  assert.match(line, /data file\(s\) checked/, 'the data half of the surface is stated too');
   assert.doesNotMatch(line, /cross-job/, 'I10 is wearing the I15 label');
   assert.match(
     out.split('\n').find((l) => l.includes('I15 artifact handoff')),

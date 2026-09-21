@@ -339,8 +339,20 @@ moment the template changes. The first version scanned the committed copy while
 into the page template, it reported `holds` at exit 0 without a render and two
 violations at exit 1 with one, the only difference being whether a human had run the
 renderer by hand. So `ci.yml` renders before the invariants, `pages.yml` renders,
-checks, and only then uploads, and an empty page set **fails closed** rather than
+checks, and only then uploads, and an empty surface **fails closed** rather than
 passing — *could not look* must never read as *found nothing*.
+
+**The surface is `site/`, not `site/*.html`, and the second half of that defect was
+the read set.** `index.html` is a *shell*: it holds a loading placeholder inside
+`<section id="digest">` and fetches `./api/digest.json` at runtime, assigning the
+result with `innerHTML`. Every byte of content on the served page therefore arrives
+through `site/api/`, and the check read only the file that carries none of it —
+measured on one tree with the same text in both places, three violations in
+`site/index.html` and none in `site/api/digest.json`. Both halves are now read with
+the same three patterns, and an empty half fails closed. The digest is templated
+rather than narrated (`buildPublicSurface` passes `narration: null`), so this closes
+a route for the **renderer's** output — which is code, and code is what a check over
+the published bytes exists to catch — and not a route for model prose.
 
 ### I11 — Honesty about time, and about what is missing
 
