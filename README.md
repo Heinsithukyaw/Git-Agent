@@ -160,8 +160,10 @@ _No run recorded yet. The first scheduled run fills this in._
 Five steps, and none of them is required for the agent to work: a keyless instance produces
 a complete digest.
 
-1. **Use this template** — not a fork. A fork of a public repository is public and cannot be
-   made private. See [Where it runs](#where-it-runs).
+1. **Use this template** — not a fork, and **make the new repository private**. A fork of a
+   public repository is public and cannot be made private, and a public *instance* discloses
+   its own stack whether or not Pages is enabled. See [Where it runs](#where-it-runs) — the
+   visibility is a security decision, not a preference.
 
 2. **Edit `data/stack.json`.** It is the watch list of packages you want followed, and for
    each one the symbols you import. The file has three jobs: it is the watch list, the
@@ -346,6 +348,31 @@ What the split buys you:
 The thing to be careful with is not the code — it is `data/stack.json`. That file is your
 dependency inventory, and it is the only genuinely sensitive thing the agent stores. It
 belongs in the private instance.
+
+### The repository's own visibility comes first
+
+Pages is the **second** route to disclosure. The first is the repository itself, and it is the
+one you choose at creation time.
+
+Everything the agent collects is committed — `digest.yml` stages it with `git add -A` — and only
+two of those files are projected:
+
+| Committed path | What it holds | Projected? |
+|---|---|---|
+| `README.md` | the generated digest section, **unredacted** | no |
+| `digest/<date>.md` | the unredacted digest, narration included | no |
+| `data/stack.json` | your watch list — your dependency inventory | no |
+| `data/summary.json` | the private counts, including how much was withheld | no |
+| `data/endpoint.json` | which endpoint you point at | no |
+| `digest/public-<date>.md` | the digest Pages serves | **yes** |
+| `data/public-summary.json` | the counts the page shows | **yes** |
+
+So a **public** instance repository puts your stack on its own front page — `README.md` is the
+first file anyone reads — with Pages off and nothing configured. The projection cannot help
+here: it narrows the two files the renderer reads, and the digest in `README.md` is rendered
+from the full payload, before the projection runs.
+
+Keep the instance private. That is what the three-repository split rests on.
 
 ### Pages publishes the site, not the repository's visibility
 

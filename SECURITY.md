@@ -17,6 +17,33 @@ facts shape what is worth reporting.
 - **The sandbox ships off** (`SANDBOX_ENABLED=false`). The default
   instantiation executes no third-party code at all.
 
+## If you are running an instance
+
+This template is public and holds nothing worth protecting. **Your instance is where the
+security decisions are**, and there are three the template cannot make for you.
+
+**1. The repository's visibility is the first control.** Everything the agent collects is
+committed — `digest.yml` stages it with `git add -A` — and only the two files Pages serves are
+projected. The **unredacted** digest is rendered into your instance's own `README.md` and
+`digest/`, and your watch list is `data/stack.json`. A public instance repository therefore
+discloses your stack on its front page, with Pages disabled and nothing configured. Keep the
+instance private.
+
+**2. Enabling Pages publishes, whatever the repository's visibility.** A Pages site built from a
+**private** repository is world-readable: privately published sites require GitHub Enterprise
+Cloud, and access control is available only for organisation-owned project sites. If your stack
+must stay private, do not enable `pages.yml`.
+
+**3. The publication lists are yours to narrow.** `public_packages`, `public_upstreams` and
+`public_feeds` in `data/stack.json` name the subset that may reach the Pages surface. The seed
+file lists all six packages because the seed is a public demo; an instance should list only what
+it is willing to publish. An explicit empty list is a valid deny-all — and a **missing** list is
+not one: it withholds the entire surface and records why.
+
+README §*Where it runs* is the operator-facing version of all three. None of them is a defect in
+the template — they are the configuration it cannot choose for you, and a report that an
+instance was configured permissively is a report about that instance.
+
 ## What is in scope
 
 Anything that breaks an invariant in `AGENTS.md`. Concretely, roughly in the
@@ -44,8 +71,10 @@ sentence that got close is still a report about the gate.
   their repository. That is theirs, not a defect here.
 - **Anything requiring existing write access.** If you can already push to the
   default branch, you are inside the trust boundary, not attacking it.
-- **The public digest being public.** It is supposed to be. It contains advisory
-  data about public packages.
+- **This template's demo digest being public.** It is supposed to be: the seed
+  stack watches widely-used packages and one public feed, so the digest is
+  derived from public data. **That is a statement about this repository, not
+  about your instance** — see *If you are running an instance* above.
 - **Cost, missing features, or model quality.** Those are issues. Open a normal
   issue.
 
