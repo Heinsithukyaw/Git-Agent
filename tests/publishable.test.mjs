@@ -15,12 +15,13 @@
  * means something — and a must-fail twin that renders the *unprojected* payload
  * and requires the sweep to find the sentinel.
  *
- * **What the canary does not prove.** `scripts/render-site.mjs` does not call
- * `projectPublishable()` yet — wiring the projection into the site job is a
- * separate slice. So the canary proves the projection's *output* is clean when it
- * is what gets rendered, and that the sweep can detect the leak it guards
- * against. It does not prove the shipped site job applies the projection. That
- * claim needs the wiring, and it is not made here.
+ * **What the canary does and does not prove.** It calls the shipped
+ * `buildPublicSurface`, which is what `scripts/commit-step.mjs` calls, so a
+ * defect in the assembly fails here rather than only in production. What it does
+ * not exercise is the *call site*: it writes the two artifacts itself and then
+ * runs `scripts/render-site.mjs`, so it never runs `commit-step`. The ordering of
+ * the projection against the gate is therefore asserted statically — I2's second
+ * clause — and not by this test.
  */
 
 import { test } from 'node:test';
@@ -145,12 +146,27 @@ function decisions() {
   ];
 }
 
-/** Command rows as `history/commands.jsonl` holds them — login included. */
+/**
+ * Command rows as `history/commands.jsonl` holds them — login included.
+ *
+ * The third row is the one that matters. `validate()` only requires a `why` /
+ * `bump` / `wrong` argument to be **watched** (`lib/commands.mjs:183-189`), and
+ * watched is a superset of published, so this row is a legitimate command for a
+ * package the instance watches and has not listed. Stripping the login left the
+ * argument in, and the name rendered into the public digest. A fixture whose
+ * only arguments were public would make the canary green over exactly that.
+ */
 function commands() {
   return [
-    { comment_id: 1, author: 'octocat', verb: 'why', arg: 'lodash', started_at: 't', outcome: 'answered' },
+    { comment_id: 1, author: 'octocat', verb: 'why', arg: 'express', started_at: 't', outcome: 'answered' },
     { comment_id: 2, author: 'someone-else', verb: 'pause', arg: null, started_at: 't', outcome: 'recorded' },
+    { comment_id: 3, author: 'octocat', verb: 'why', arg: SENTINEL, started_at: 't', outcome: 'answered' },
   ];
+}
+
+/** The rows as the digest would render them if nothing filtered the argument. */
+function rawCommandRows() {
+  return commands().map(({ verb, arg, outcome }) => ({ verb, arg, outcome }));
 }
 
 /* -------------------------------------------------------------- reading --- */
@@ -479,23 +495,54 @@ test('every published count is derived from the projected set, not the private o
   assert.equal(surface.summary.advisories, 1, 'two advisories, one for a publishable package');
 });
 
-test('the public summary carries the verb and the argument, never the author login', () => {
+test('the public summary carries the verb and a published argument, never the author or a private name', () => {
   // The rows carry a GitHub login and the summary is rendered onto a
   // world-readable page. `lib/render.mjs:390-394` states the rule: "a login
-  // belongs to a person rather than to this repository."
+  // belongs to a person rather than to this repository." The argument is the
+  // second entity-bearing field in the same row, and it is the one that was left
+  // in — the row survives `validate()` because the package is watched.
   const rows = commands();
   assert.ok(JSON.stringify(rows).includes('octocat'), 'the fixture really carries a login');
+  assert.ok(JSON.stringify(rows).includes(SENTINEL), 'and a watched-but-unpublished argument');
 
   const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: stack(), commands: rows });
-  assert.deepEqual(surface.summary.commands, [
-    { verb: 'why', arg: 'lodash', outcome: 'answered' },
-    { verb: 'pause', arg: null, outcome: 'recorded' },
-  ]);
+  assert.deepEqual(
+    surface.summary.commands,
+    [
+      { verb: 'why', arg: 'express', outcome: 'answered' },
+      { verb: 'pause', arg: null, outcome: 'recorded' },
+    ],
+    'the published argument survives and the private one does not',
+  );
 
   const published = JSON.stringify(surface.summary) + surface.digest;
   assert.ok(!published.includes('octocat'), 'the login must not reach the public surface');
   assert.ok(!published.includes('someone-else'));
   assert.ok(!published.includes('"author"'), 'and neither must the field itself');
+  assert.ok(!containsToken(published, SENTINEL), 'nor the argument of a command about an unlisted package');
+});
+
+test('the command filter is not vacuous: an unfiltered row publishes the private argument', () => {
+  // The must-fail twin. `projectCommands` is the only thing between a
+  // watched-but-unpublished argument and the page: with the argument filter
+  // removed, the name lands in the digest — which is what the canary sweep and
+  // the assertion above would then find.
+  const policy = readPolicy(stack());
+  const digest = renderDigest({
+    payload: projectPublishable(payload(), policy),
+    decisions: projectDecisions(decisions(), policy),
+    narration: null,
+    narrationStatus: null,
+    commands: rawCommandRows(),
+  });
+  assert.ok(containsToken(digest, SENTINEL), 'the unfiltered command list carries the private argument');
+  assert.ok(containsToken(digest, 'express'), 'and the public argument, so the fixture is not empty');
+
+  assert.deepEqual(
+    projectCommands(commands(), policy).map((c) => c.arg),
+    ['express', null],
+    'and the filter is what removes the third',
+  );
 });
 
 /* ------------------------------------------------------------- the canary --- */
@@ -539,6 +586,10 @@ test('publish canary: the shipped assembly keeps a private package out of every 
   // The shipped path, not a re-implementation of it: `buildPublicSurface` is
   // what `commit-step` calls, so a defect in the assembly fails here. A canary
   // that assembled the artifacts itself would test the canary.
+  //
+  // Three routes carry the sentinel in this fixture — the package list, the
+  // decision table, and a command whose argument names it — so a single missing
+  // filter turns the sweep red rather than one route going unnoticed.
   const surface = buildPublicSurface({
     payload: payload(),
     decisions: decisions(),
@@ -575,12 +626,13 @@ test('the canary is not vacuous: the unprojected documents leak the sentinel thr
   // with unprojected decisions would have published a private package name in
   // the decision table while the sweep stayed green.
   const pl = payload();
+  const policy = readPolicy(stack());
   const rawDigest = renderDigest({
     payload: pl,
     decisions: decisions(),
     narration: null,
     narrationStatus: null,
-    commands: projectCommands(commands()),
+    commands: projectCommands(commands(), policy),
   });
   assert.ok(
     containsToken(rawDigest, SENTINEL),
@@ -593,7 +645,7 @@ test('the canary is not vacuous: the unprojected documents leak the sentinel thr
     summary: {
       ...renderSummary({ payload: pl, decisions: decisions(), heartbeat: null }),
       heartbeat: null,
-      commands: projectCommands(commands()),
+      commands: projectCommands(commands(), policy),
     },
   });
   const result = runSite(dir);
