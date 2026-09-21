@@ -1,0 +1,35 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 480 56" width="480" height="56" role="img" aria-labelledby="badgeTitle">
+  <!--
+    Git Agent — README CI badge (light).
+
+    The badge states a property of the tree, not a status. AGENTS.md holds that
+    "every rule below is either enforced by a check in `.github/workflows/ci.yml`
+    or it is not a rule", and that is the claim this draws. It deliberately does
+    not read "passing": a hand-built SVG cannot know the current run's result, so
+    a static "passing" would be the one kind of claim this repository forbids — a
+    property it cannot prove. The live result lives one click away, which is what
+    the link beside it is for.
+
+    Nothing here is a measurement, so nothing can drift.
+
+    Palette: site/index.html (:root). Dark twin: badge-dark.svg.
+  -->
+  <title id="badgeTitle">Continuous integration: every rule is enforced by a check, or it is not a rule. Follow the link to see the current runs.</title>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .card { fill: #f7f9fb; stroke: #e3e7ec; stroke-width: 1; }
+    .pill { fill: #0b62d6; }
+    .pilltx { fill: #ffffff; }
+    .ink { fill: #14181f; }
+    .muted { fill: #5b6675; }
+  </style>
+
+  <rect class="card" x="0.5" y="0.5" width="479" height="55" rx="8"/>
+
+  <rect class="pill" x="12" y="12" width="52" height="32" rx="6"/>
+  <text class="mono pilltx" x="38" y="28" font-size="15" font-weight="600" text-anchor="middle" dominant-baseline="central">ci</text>
+
+  <text class="sans ink" x="76" y="28" font-size="14" dominant-baseline="central">every rule is enforced by a check</text>
+  <text class="sans muted" x="468" y="28" font-size="13" text-anchor="end" dominant-baseline="central">view the runs &#8594;</text>
+</svg>

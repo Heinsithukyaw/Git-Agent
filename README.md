@@ -27,14 +27,44 @@ Four zeros and a four, and none of them is a measurement. `dependencies` is empt
 secret at all; and `digest.yml` is four jobs because **no job may hold both a model key and
 a write token**.
 
-**Jump to:** [Overview](#overview) · [Features](#features) · [Architecture](#architecture) ·
-[The digest](#the-digest) · [Set it up](#set-it-up) · [How you talk to it](#how-you-talk-to-it) ·
-[Commands](#commands) · [Where it runs](#where-it-runs) · [What it costs you](#what-it-costs-you)
+<a href="../../actions/workflows/ci.yml">
+  <picture>
+    <source media="(prefers-color-scheme: dark)" srcset="./assets/badge-dark.svg">
+    <img src="./assets/badge.svg" width="480" alt="Continuous integration: every rule is enforced by a check, or it is not a rule. Follow the link to see the current runs.">
+  </picture>
+</a>
+
+The badge reads *enforced*, not *passing*, and that is deliberate: a hand-built SVG cannot know
+the current run's result, so a static "passing" would be exactly the kind of claim this repository
+forbids — a property it cannot prove. The link is where the live result actually is.
+
+**Jump to:** [Quick start](#quick-start) · [Overview](#overview) · [Features](#features) ·
+[Architecture](#architecture) · [The digest](#the-digest) · [Set it up](#set-it-up) ·
+[How you talk to it](#how-you-talk-to-it) · [Commands](#commands) · [Where it runs](#where-it-runs) ·
+[What it costs you](#what-it-costs-you)
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/divider-dark.svg">
   <img src="./assets/divider.svg" width="1200" alt="">
 </picture>
+
+## Quick start
+
+**You can watch it work before you configure anything.** A keyless instance produces a complete
+digest — the rules tier decides everything it can, and no model is contacted. So the shortest
+path to a running agent is three steps, and none of them needs a secret.
+
+1. **Use this template** — not a fork — and **make the new repository private.** A fork of a
+   public repository is public and cannot be made private, and a public *instance* discloses
+   its own stack whether or not Pages is enabled.
+2. **Edit [`data/stack.json`](./data/stack.json)** — the packages to follow, and the symbols you
+   import from each. The same file is the argument allowlist and the publication allowlist.
+3. **Run it once** — Actions → *digest* → *Run workflow*. It commits a digest to the repository,
+   and publishes it if Pages is enabled. Left alone, it runs itself daily at 06:17 UTC.
+
+That is a working agent, not a degraded one. To put prose on top of the deterministic digest,
+set the `LLM_BASE_URL` and `LLM_MODEL` variables and the `LLM_API_KEY` secret — every one of
+them optional. [Set it up](#set-it-up) has the full list, and what each one does.
 
 ## Overview
 
