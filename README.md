@@ -93,7 +93,7 @@ repositories, and the split is the whole security story.
 |---|---|---|---|
 | **Template** — this one | public | no secrets; the seed `data/stack.json` | a live demo digest, daily |
 | **Your instance** | private | your real stack, your key | your digest, daily |
-| **Status** — optional | public | a subset you marked publishable | a second, redacted digest |
+| **Status** — optional, *not built yet* | public | a subset you marked publishable | a second, redacted digest |
 
 **The public template holds no secrets and runs against the seed stack as a live
 demo.** That is deliberate, and it is the point: the repository anyone can read is
@@ -114,6 +114,12 @@ anything not explicitly marked public. Build it only if you want a public status
 page. It is not a way to make a private instance public; it is a second instance
 with a smaller watch list.
 
+**The redaction is a design, not a shipped feature.** Nothing in this repository
+marks a package publishable and nothing drops an unmarked one, so a third
+repository created today would publish its **entire** watch list. Until that is
+built, a public status page means hand-maintaining a `data/stack.json` that
+contains only packages you are willing to publish.
+
 What the split buys you:
 
 - **A mistake in the template costs nothing.** Its history is public, so a leak
@@ -126,6 +132,23 @@ What the split buys you:
 The thing to be careful with is not the code — it is `data/stack.json`. That file
 is your dependency inventory, and it is the only genuinely sensitive thing the
 agent stores. It belongs in the private instance.
+
+### Pages publishes the site, not the repository's visibility
+
+One caveat, and it is the platform's rather than this design's: **a Pages site
+built from a private repository is still readable by anyone on the internet.**
+
+- Pages from a **private** repository needs **GitHub Pro / Team / Enterprise**.
+  GitHub Free allows Pages from public repositories only.
+- A **privately published** (access-controlled) Pages site needs **GitHub
+  Enterprise Cloud**, and only for project sites owned by an organisation.
+
+So on Pro/Team — or a personal account — enabling `pages.yml` on your private
+instance publishes your digest, and the digest names the packages you watch.
+`site/index.html` also prints `packages watched`. It is opt-in for exactly this
+reason: `pages.yml` fails loudly on the deploy step when Pages is not enabled,
+and nothing else is affected. **If your stack must stay private, do not enable
+it.**
 
 ### If you would rather run only one repository
 

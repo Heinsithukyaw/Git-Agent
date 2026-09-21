@@ -527,9 +527,14 @@ than a deployment preference.
 |---|---|---|---|
 | Template — this one | public | no secrets; the seed `data/stack.json` | a live demo digest |
 | Instance | private | the user's stack, the user's key | the user's digest |
-| Status — optional | public | a subset marked publishable | a second, redacted digest |
+| Status — optional, **not built yet** | public | a subset marked publishable | a second, redacted digest |
 
-Three consequences that shape what may be committed here:
+**The Status row is a design, not a shipped feature.** Nothing here marks a
+package publishable and nothing redacts a digest, so a second instance built
+today would publish its whole watch list. Tracked as P2-1 in
+`ARCHITECTURE-REVIEW.md`.
+
+Four consequences that shape what may be committed here:
 
 1. **The seed stack is a demo, not a placeholder.** This repository runs the real
    pipeline against `data/stack.json` on a schedule and publishes the result. It
@@ -547,6 +552,13 @@ Three consequences that shape what may be committed here:
    settings and secrets. `README.md` says this to users; this file says it to
    contributors, because a change that only works when the repository is private
    breaks the template.
+4. **Pages publishes the digest, and the repository's visibility does not make
+   the site private.** A Pages site built from a **private** repository is still
+   world-readable — access-controlled Pages requires Enterprise Cloud, and only
+   for org-owned project sites. So `pages.yml` is not a way to show a private
+   instance's digest to a chosen few; it is a way to publish it. That is why it
+   is opt-in, and it is the reason the digest is only ever as safe to publish as
+   the watch list it is computed from.
 
 - **Enforced by:** `ci.yml` → `no-secrets-in-tree` refuses a credential-shaped
   string anywhere in the tree.
