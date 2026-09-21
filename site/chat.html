@@ -4,115 +4,531 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Ask the agent</title>
+<link rel="icon" href="./favicon.svg" type="image/svg+xml">
+<!-- One theme-color, not two: the page is dark by design, so there is no second
+     value to switch to. This paints the mobile browser chrome to match the ground. -->
+<meta name="theme-color" content="#08090C">
 <style>
   :root {
-    --bg: #ffffff; --fg: #14181f; --muted: #5b6675; --line: #e3e7ec;
-    --card: #f7f9fb; --accent: #0b62d6; --warn-bg: #fff8e1; --warn-line: #e6c15a;
-    --ok: #1a7f37; --bad: #b3261e;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #0d1117; --fg: #e6edf3; --muted: #9aa7b4; --line: #232a33;
-      --card: #131a22; --accent: #58a6ff; --warn-bg: #2a2413; --warn-line: #7a6420;
-      --ok: #3fb950; --bad: #f85149;
-    }
+    /* Dark only, and deliberately so: a near-black ground with a warm gold
+       accent, not a light theme with the colours inverted, so there is no twin
+       to keep in step. "color-scheme: dark" is the part that is not decoration
+       — it is what makes the select's popup, the caret, the scrollbars and the
+       default focus ring follow the page instead of rendering as light native
+       widgets on a near-black surface. */
+    color-scheme: dark;
+    --bg: #08090C;
+    --surface: rgba(255,255,255,.028);
+    --surface-2: rgba(255,255,255,.055);
+    --line: rgba(255,255,255,.075);
+    --line-2: rgba(255,255,255,.16);
+    /* The text ramp. Every step is measured against the worst surface it can
+       land on — a .055 white wash over the ground — and not against the ground
+       alone: auditing a token against --bg when it renders on glass is
+       auditing the wrong pair. The luminance steps are 1.66x / 1.60x / 1.46x,
+       so the four levels stay separable instead of collapsing into one grey. */
+    --title: #F5F2EA;
+    --fg: #C6C1B7;
+    --muted: #A29C90;
+    --dim: #8A8377;
+    --gold: #E3B778;
+    --gold-deep: #C98A4B;
+    --violet: #B99BE8;
+    --ok: #5FD39A;
+    --bad: #FB7185;
+    --warn: #E8C67A;
+    --radius: 15px;
+    /* Exponential ease-out: natural deceleration, never bounce or elastic. */
+    --ease: cubic-bezier(.16,1,.3,1);
+    --ease-soft: cubic-bezier(.25,1,.5,1);
+    --mono: ui-monospace, SFMono-Regular, "SF Mono", Menlo, Consolas, monospace;
   }
   * { box-sizing: border-box; }
+  /* overflow-x is declared on the root as well as on body, and the reason is
+     measurement rather than layout.
+     "body { overflow-x: hidden }" with a "visible" root propagates to the
+     viewport, and body then *computes* to visible — so the page is correctly
+     unscrollable, but "documentElement.scrollWidth" keeps reporting the width
+     of the content that was clipped away. Measured on the digest page at a
+     390px viewport: scrollWidth 395, clientWidth 390, "window.scrollX" pinned
+     at 0 and no unclipped element past the edge. The number is a false positive
+     for the only test anyone writes against it (scrollWidth > clientWidth), and
+     a check that reports a defect where there is none is how a real one gets
+     ignored. Declaring it on the root makes the number agree with the
+     behaviour: 390. */
+  html { background: var(--bg); scroll-behavior: smooth; overflow-x: hidden; }
   body {
-    margin: 0; padding: 0 16px calc(24px + env(safe-area-inset-bottom));
-    background: var(--bg); color: var(--fg);
-    font: 16px/1.55 -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    margin: 0; background: var(--bg); color: var(--fg);
+    font: 15px/1.62 -apple-system, BlinkMacSystemFont, "Segoe UI", Inter, Helvetica, Arial, sans-serif;
+    -webkit-font-smoothing: antialiased;
+    min-height: 100vh; position: relative; overflow-x: hidden;
   }
-  .wrap { max-width: 860px; margin: 0 auto; }
-  header { padding: 20px 0 8px; border-bottom: 1px solid var(--line); }
-  h1 { font-size: 20px; margin: 0 0 4px; }
-  .sub { color: var(--muted); font-size: 13px; margin: 0; }
-  nav { display: flex; gap: 14px; padding: 10px 0 0; font-size: 14px; }
-  nav a { color: var(--accent); text-decoration: none; }
-  nav a[aria-current="page"] { color: var(--fg); font-weight: 600; }
-  .stats { display: flex; flex-wrap: wrap; gap: 8px; padding: 14px 0 0; }
-  .stat {
-    background: var(--card); border: 1px solid var(--line); border-radius: 8px;
-    padding: 8px 12px; min-width: 92px;
+  /* Atmosphere, in three fixed layers that never take a pointer event. None of
+     it carries meaning: delete all three and the page is still complete and
+     still readable. That is the test of decoration. */
+  body::before { /* aurora wash */
+    content: ""; position: fixed; inset: -20% -10%; z-index: 0; pointer-events: none;
+    background:
+      radial-gradient(760px 520px at 14% -6%, rgba(185,155,232,.16), transparent 62%),
+      radial-gradient(680px 440px at 86% 2%, rgba(227,183,120,.13), transparent 64%),
+      radial-gradient(900px 620px at 52% 112%, rgba(95,211,154,.055), transparent 62%);
+    animation: drift 26s var(--ease) infinite alternate;
   }
-  .stat b { display: block; font-size: 20px; line-height: 1.2; }
-  .stat span { color: var(--muted); font-size: 12px; }
-  .live { font-size: 13px; color: var(--muted); padding: 10px 0 0; }
-  .live b { color: var(--ok); }
-  .live b.bad { color: var(--bad); }
-  main { padding: 16px 0; }
-  main h2 { font-size: 17px; margin: 22px 0 8px; }
-  main h3 { font-size: 15px; margin: 18px 0 6px; }
-  main table { width: 100%; border-collapse: collapse; font-size: 14px; margin: 8px 0; }
-  main th, main td { text-align: left; padding: 6px 8px; border-bottom: 1px solid var(--line); vertical-align: top; }
-  main th { color: var(--muted); font-weight: 600; }
-  main code { background: var(--card); padding: 1px 4px; border-radius: 4px; font-size: 13px; }
+  body::after { /* hairline grid, faded out downward */
+    content: ""; position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .5;
+    background-image:
+      linear-gradient(rgba(255,255,255,.026) 1px, transparent 1px),
+      linear-gradient(90deg, rgba(255,255,255,.026) 1px, transparent 1px);
+    background-size: 58px 58px;
+    -webkit-mask-image: radial-gradient(ellipse 95% 62% at 50% 0%, #000 35%, transparent 100%);
+    mask-image: radial-gradient(ellipse 95% 62% at 50% 0%, #000 35%, transparent 100%);
+  }
+  .grain { /* film grain — static, painted once */
+    position: fixed; inset: 0; z-index: 0; pointer-events: none; opacity: .05;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.8' numOctaves='3'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)'/%3E%3C/svg%3E");
+  }
+  @keyframes drift {
+    from { transform: translate3d(0,0,0) scale(1) }
+    to { transform: translate3d(-2%,1.5%,0) scale(1.06) }
+  }
+  ::selection { background: rgba(227,183,120,.28); color: #fff; }
+  .wrap {
+    position: relative; z-index: 1; max-width: 1080px; margin: 0 auto;
+    --gutter: 26px; padding: 42px var(--gutter) 80px;
+  }
+  /* Notched phones in landscape: the page has to start inside the safe area, and
+     body already hides horizontal overflow, so without this the left edge is
+     simply gone rather than scrollable. */
+  @supports (padding: max(0px)) {
+    .wrap {
+      padding-left: max(var(--gutter), env(safe-area-inset-left));
+      padding-right: max(var(--gutter), env(safe-area-inset-right));
+      padding-bottom: max(80px, env(safe-area-inset-bottom));
+    }
+  }
+
+  /* ---------- hero ---------- */
+  .brand { display: flex; align-items: center; gap: 13px; flex-wrap: wrap; }
+  .mark { width: 40px; height: 40px; flex: none; overflow: visible; }
+  .mark * { vector-effect: non-scaling-stroke; }
+  /* The pulse is a base style, not an animation-only style: with motion off the
+     animation is neutered and the dot simply rests at the gate's mouth, which is
+     still the right drawing. An animation that carries the only copy of a visual
+     state erases it for anyone who has asked for less motion. */
+  .markdot { animation: gate 3.8s var(--ease) infinite; }
+  @keyframes gate {
+    0% { transform: translateX(0); opacity: 0 }
+    10% { opacity: 1 }
+    50% { transform: translateX(30px); opacity: 1 }
+    62% { opacity: 0 }
+    100% { transform: translateX(30px); opacity: 0 }
+  }
+  h1 {
+    font-size: clamp(24px, 3.1vw, 31px); font-weight: 600; color: var(--title);
+    margin: 0; letter-spacing: -.028em; line-height: 1.12;
+    background: linear-gradient(96deg, #FFF8EC 6%, #E3B778 58%, #B99BE8 100%);
+    -webkit-background-clip: text; background-clip: text; -webkit-text-fill-color: transparent;
+  }
+  /* The status pill. The beacon is the one animation on the page that carries
+     meaning, so it is the one that must not be the only carrier: the word beside
+     it says the same thing. */
+  .live {
+    display: inline-flex; align-items: center; gap: 7px; padding: 4px 11px 4px 9px;
+    border: 1px solid rgba(227,183,120,.30); border-radius: 999px;
+    font: 600 10.5px/1 var(--mono); letter-spacing: .13em; color: var(--gold);
+    background: rgba(227,183,120,.07);
+  }
+  .live b {
+    width: 6px; height: 6px; border-radius: 50%; background: var(--gold);
+    box-shadow: 0 0 0 0 rgba(227,183,120,.55); animation: beacon 2.4s var(--ease) infinite;
+  }
+  .live.bad { color: var(--bad); border-color: rgba(251,113,133,.32); background: rgba(251,113,133,.08); }
+  .live.bad b { background: var(--bad); box-shadow: 0 0 0 0 rgba(251,113,133,.55); }
+  @keyframes beacon {
+    0% { box-shadow: 0 0 0 0 rgba(227,183,120,.5) }
+    70% { box-shadow: 0 0 0 9px rgba(227,183,120,0) }
+    100% { box-shadow: 0 0 0 0 rgba(227,183,120,0) }
+  }
+  .lede { margin: 14px 0 0; max-width: 68ch; color: var(--muted); font-size: 14.5px; }
+  .lede b { color: var(--fg); font-weight: 500; }
+  nav { display: flex; gap: 7px; margin: 18px 0 0; font-size: 13.5px; }
+  nav a {
+    color: var(--muted); text-decoration: none; padding: 7px 14px; border-radius: 999px;
+    border: 1px solid transparent; transition: color .16s, border-color .16s, background .16s;
+  }
+  nav a:hover { color: var(--title); border-color: var(--line); background: var(--surface); }
+  nav a[aria-current="page"] {
+    color: var(--title); border-color: var(--line); background: var(--surface-2); font-weight: 600;
+  }
+
+  /* One focus treatment for every interactive thing on the page, including the
+     form controls, which otherwise keep the UA ring — invisible on a near-black
+     page and inconsistent with the links beside it. */
+  a:focus-visible, button:focus-visible, select:focus-visible, input:focus-visible {
+    outline: 2px solid var(--gold); outline-offset: 2px; border-radius: 6px;
+  }
+
+  /* ---------- stats: one band, not six cards ----------
+     The counts are one reading. Six boxes with six borders read as six unrelated
+     facts and cost twelve edges to say what six dividers say. The band is glass
+     rather than a flat fill so the aurora passes behind it. */
+  .stats {
+    display: flex; flex-wrap: wrap; margin: 26px 0 0;
+    border: 1px solid var(--line); border-radius: var(--radius); overflow: hidden;
+    background: linear-gradient(180deg, rgba(255,255,255,.045), rgba(255,255,255,.014));
+    backdrop-filter: blur(14px); -webkit-backdrop-filter: blur(14px);
+  }
+  .stat { flex: 1 1 128px; padding: 15px 19px; border-right: 1px solid var(--line); min-width: 0; }
+  .stat:last-child { border-right: 0; }
+  .stat b {
+    display: block; font: 600 21px/1.2 var(--mono); color: var(--title);
+    font-variant-numeric: tabular-nums; letter-spacing: -.01em;
+    white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  }
+  .stat b.acc { color: var(--gold); }
+  .stat b.bad { color: var(--bad); }
+  .stat span {
+    display: block; margin-top: 5px; font-size: 10px; color: var(--dim);
+    text-transform: uppercase; letter-spacing: .11em;
+  }
+
+  /* ---------- the run strip ----------
+     The daily run, drawn: three stages and the conditional heartbeat. It is a
+     static description of the system, not of this run, which is why it renders
+     even when nothing has been published.
+
+     It scrolls sideways on a narrow screen rather than shrinking, and the
+     min-width is the whole point of that. Measured at a 390px viewport: the SVG
+     laid out at 358px wide, which scales a 9px mono label to 3.9px — present,
+     and unreadable, which is the same as absent while looking like a decision
+     someone made. The strip carries real structure (four jobs, and where the
+     gate sits relative to the key), so it is worth a horizontal scroll; the
+     digest table below it already behaves this way, and the two now share one
+     scroll affordance rather than two copies of it. */
+  .runstrip {
+    margin: 18px 0 0; padding: 16px 20px 12px; border: 1px solid var(--line);
+    border-radius: var(--radius); background-color: rgba(255,255,255,.018);
+    overflow-x: auto;
+  }
+  .runstrip svg { display: block; width: 100%; min-width: 900px; height: auto; overflow: visible; }
+  /* One scroll affordance for the two boxes that scroll sideways — the digest
+     table and the run strip. It lives here rather than on each because a
+     four-layer background copied into a second rule is a background that will
+     drift.
+
+     A scroll box with no cue hides its right-hand content with nothing to say
+     it is there, and on the digest table that content is the Why column — the
+     most informative one. Two layers per side: a cover in the page background
+     that travels with the content (local) masks a shadow pinned to the box edge
+     (scroll). At scroll 0 the left shadow is covered and the right one shows;
+     at the far end they swap. Only the edge with more content is ever lit.
+
+     The shadow is mixed from currentColor rather than given a token of its own,
+     so it follows the theme by construction: a black shadow is invisible on the
+     dark page, and a fixed light one would glare on a light page. Where
+     color-mix is unsupported the declaration drops and the box simply has no
+     shadow — the fallback is the plain scroll box, not a broken one. */
+  main table, .runstrip {
+    background-image:
+      linear-gradient(to right, var(--bg) 40%, transparent),
+      linear-gradient(to left, var(--bg) 40%, transparent),
+      radial-gradient(farthest-side at 0 50%, color-mix(in srgb, currentColor 20%, transparent), transparent),
+      radial-gradient(farthest-side at 100% 50%, color-mix(in srgb, currentColor 20%, transparent), transparent);
+    background-position: 0 0, 100% 0, 0 0, 100% 0;
+    background-size: 26px 100%, 26px 100%, 13px 100%, 13px 100%;
+    background-repeat: no-repeat;
+    background-attachment: local, local, scroll, scroll;
+  }
+  /* The diagram's geometry is its content — which stage feeds which, and where
+     the gate sits on the wire — so the lines and outlines are graphical objects
+     under WCAG 1.4.11 and owe 3:1 against what they sit on, not the 1.45:1 and
+     1.80:1 that .14 and .20 measured. .34 is the first step that clears it
+     (measured 3.06:1 against the strip's own background, composited over --bg).
+     The labels inside the boxes were never the problem: 10.81:1 for the stage
+     names, 5.16:1 for the sub-labels. */
+  .pipe-line { stroke: rgba(255,255,255,.34); stroke-width: 1.25; fill: none; }
+  .pipe-flow { stroke: var(--gold); stroke-width: 1.6; fill: none; stroke-dasharray: 26 240;
+    animation: flow 5.5s linear infinite; opacity: .8; }
+  @keyframes flow { to { stroke-dashoffset: -798 } }
+  .pipe-node { fill: #0B0C10; stroke: rgba(255,255,255,.34); stroke-width: 1.1; }
+  .pipe-gate { stroke: var(--gold); stroke-width: 1.3; }
+  .pipe-big { fill: #C6C1B7; font: 600 11px var(--mono); text-anchor: middle; }
+  .pipe-sub { fill: #8A8377; font: 9px var(--mono); text-anchor: middle; }
+  .pipe-mid { fill: #8A8377; font: 9px var(--mono); text-anchor: middle; letter-spacing: .08em; }
+
+  /* The liveness line, as a ledger attached under the strip.
+     max-width is reset because this is a <p> inside <main> and the prose
+     measure applies to it: at 72ch the bar stopped short of the strip it is
+     meant to be attached to, which reads as a broken box rather than a line of
+     text. The ledger is a table row, not a paragraph. */
+  .ledger {
+    margin: 0 0 30px; padding: 10px 15px; border: 1px solid var(--line); border-top: 0;
+    border-radius: 0 0 var(--radius) var(--radius); background: rgba(255,255,255,.01);
+    font: 11px/1.6 var(--mono); color: var(--muted); letter-spacing: .04em;
+    max-width: none;
+  }
+  .ledger time { color: var(--dim); }
+  /* The one word in the ledger that is a verdict rather than a record. Colour
+     alone must not carry it — the word "ok" or "failure" is right there — so
+     this is emphasis on a statement that already reads correctly in plain ink. */
+  .ledger b { color: var(--ok); font-weight: 600; }
+  .ledger b.bad { color: var(--bad); }
+  main { padding: 0 0 8px; }
+  main h2 { font-size: 17px; color: var(--title); margin: 30px 0 10px; letter-spacing: -.012em; }
+  main h3 { font-size: 14px; color: var(--fg); margin: 22px 0 8px; }
+  main h4, main h5, main h6 { font-size: 13px; color: var(--muted); margin: 18px 0 6px; }
+  /* Prose is set to a measure; tables are not.
+     Measured on the digest page at a 1440px viewport, a body paragraph ran the
+     full 1028px of the content column — 112ch, against the 45-75ch a reader can
+     track without losing the line. The heading, the tables and the diagram stay
+     full width because they are not read line by line; the paragraphs are, and
+     that is the difference. The step between the two is the normal shape of an
+     editorial page, and it is the reason the digest is legible rather than just
+     tidy. */
+  main p { margin: 11px 0; max-width: 72ch; }
+  main ul, main ol { margin: 11px 0; padding-left: 22px; max-width: 72ch; }
+  main li { margin: 5px 0; }
+  main li::marker { color: var(--dim); }
+  main hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+  main strong { color: var(--title); font-weight: 600; }
+  /* display:block + overflow-x:auto is what keeps a wide table from
+     widening the *page* on a phone: measured at a 390px viewport the document
+     was 544px wide, so the last column was clipped and the whole page scrolled
+     sideways. The rows keep their table layout inside the scroll box. */
+  main table {
+    display: block; width: max-content; min-width: 100%; max-width: 100%;
+    overflow-x: auto; border-collapse: collapse; font-size: 14px; margin: 8px 0;
+  }
+  main th, main td { text-align: left; padding: 8px 9px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  /* The header row gets a surface of its own: a 1.2:1 rule alone does not carry
+     a column header across a wide table. Mono, uppercase and letterspaced, so
+     the header reads as a label rather than as a first data row. */
+  main th {
+    font: 600 10px var(--mono); text-transform: uppercase; letter-spacing: .1em;
+    color: var(--dim); background: rgba(255,255,255,.028); white-space: nowrap;
+  }
+  /* An identifier inside a code element is one token and never breaks. Without
+     this the max-width clamp above squeezes the column and the browser breaks
+     the advisory id at every hyphen — measured on a 390px viewport: one id
+     stacked four lines deep, which is less readable than the overflow it
+     replaced. nowrap lifts the inner table's min-content width above the
+     clamp, so the scroll box scrolls instead of the cells wrapping. Prose
+     cells (the Why column) are untouched and still wrap. */
+  main td code { white-space: nowrap; }
+  /* The digest's last column is always Why — lib/render.mjs writes the header
+     as a fixed literal. It is the only prose column, so it is the only one that
+     can absorb the clamp, and without a floor it takes whatever is left after
+     the five identifier columns and wraps to four lines per row: measured, rows
+     150px tall against 30 characters of text. The floor costs scroll distance
+     and buys back the reading. */
+  main td:last-child, main th:last-child { min-width: 220px; }
+  main code {
+    font-family: var(--mono); font-size: 12.5px; color: var(--fg);
+    background: rgba(255,255,255,.055); border: 1px solid var(--line);
+    padding: 1px 5px; border-radius: 5px;
+  }
+  /* The withheld banner, and the only warn surface on the page. */
   main blockquote {
-    margin: 8px 0; padding: 8px 12px; border-left: 3px solid var(--warn-line);
-    background: var(--warn-bg); color: var(--fg);
+    margin: 14px 0; padding: 14px 18px; border-radius: var(--radius);
+    border: 1px solid rgba(232,198,122,.26); border-left: 2px solid var(--warn);
+    background: rgba(232,198,122,.06); color: var(--fg);
   }
-  footer { border-top: 1px solid var(--line); padding-top: 12px; color: var(--muted); font-size: 12px; }
+  /* A banner that carries several blocks should not open and close with the
+     body-prose margin: the padding already sets the inset, and a leading margin
+     pushes the first line away from the rule it is meant to sit against. */
+  main blockquote > :first-child { margin-top: 0; }
+  main blockquote > :last-child { margin-bottom: 0; }
+  main a { color: var(--gold); text-decoration: none; border-bottom: 1px solid rgba(227,183,120,.32); }
+  main a:hover { border-bottom-color: var(--gold); }
+
+  /* Composer. The controls are styled rather than left to the UA, so the page
+     looks the same in every browser and the native widgets cannot disagree with
+     the ground. */
+  .field { display: block; margin: 16px 0; max-width: 520px; }
+  .field > label {
+    display: block; font: 600 10px var(--mono); letter-spacing: .12em;
+    text-transform: uppercase; color: var(--dim); margin-bottom: 7px;
+  }
+  select, input[type="text"] {
+    width: 100%; padding: 11px 13px; font: inherit; font-size: 14px; color: var(--title);
+    background: rgba(255,255,255,.032); border: 1px solid var(--line); border-radius: 11px;
+    outline: none; transition: border-color .18s, box-shadow .18s, background .18s;
+  }
+  select:hover { border-color: var(--line-2); }
+  select:focus, input[type="text"]:focus {
+    border-color: rgba(227,183,120,.45); background: rgba(255,255,255,.05);
+    box-shadow: 0 0 0 4px rgba(227,183,120,.09);
+  }
+  select:disabled, input[type="text"]:disabled { opacity: .5; cursor: not-allowed; }
+  .hint { display: block; color: var(--muted); font-size: 12.5px; margin: 7px 0 0; max-width: 520px; }
+  .preview {
+    font-family: var(--mono); font-size: 13px; color: var(--fg);
+    background: rgba(255,255,255,.028); border: 1px solid var(--line); border-radius: 11px;
+    padding: 12px 14px; max-width: 520px; margin: 18px 0;
+  }
+  .btn {
+    display: inline-block; padding: 11px 18px; font: inherit; font-weight: 600; font-size: 14px;
+    color: #0B0C10; background: linear-gradient(180deg, #F0CD96, var(--gold));
+    border: 1px solid var(--gold-deep); border-radius: 11px; cursor: pointer;
+    transition: filter .18s, transform .18s var(--ease);
+  }
+  .btn:hover:not(:disabled) { filter: brightness(1.06); transform: translateY(-1px); }
+  .btn:active:not(:disabled) { transform: translateY(0) scale(.99); }
+  /* Disabled is a token swap, not an opacity fade. Fading the whole element
+     fades its label with it: at .45 the composited button text measured 2.9:1
+     against 5.5:1 for these two tokens. WCAG exempts an inactive control from
+     the contrast requirement, so this was never a violation — but the label
+     still has to be *read* to know what the button would do, and a flat surface
+     reads as inactive without dimming the words. */
+  .btn:disabled {
+    color: var(--muted); background: rgba(255,255,255,.032); border-color: var(--line);
+    cursor: not-allowed;
+  }
+  footer {
+    margin-top: 46px; padding-top: 22px; border-top: 1px solid var(--line);
+    font-size: 12px; color: var(--dim); line-height: 1.7;
+  }
+  footer code { font-family: var(--mono); color: var(--muted); }
+
+  /* ---------- touch and small screens ----------
+     Three separate costs, all of which a phone pays and a desktop does not
+     notice, so all three stand down here rather than being tuned down: the
+     full-screen animated wash, the per-card flow animation, and the backdrop
+     blur behind the stats. What is left is the same design, held still. */
+  @media (max-width: 900px), (hover: none) {
+    body::before { animation: none; }
+    .stats { backdrop-filter: none; -webkit-backdrop-filter: none; }
+    .pipe-flow { animation: none; }
+  }
+  @media (max-width: 900px) {
+    /* 16px, not 13.5px: iOS Safari zooms the whole page when a focused field is
+       set below 16px, and it does not zoom back out. Readers experience that as
+       the layout breaking. */
+    select, input[type="text"] { font-size: 16px; }
+  }
+  @media (max-width: 640px) {
+    .wrap { --gutter: 16px; padding-top: 30px; padding-bottom: max(60px, env(safe-area-inset-bottom)); }
+    h1 { font-size: 23px; }
+    /* Two per row, and the dividers have to follow the new grid: the band's
+       right border would otherwise sit in the middle of a row. */
+    .stat { flex: 1 1 50%; border-bottom: 1px solid var(--line); }
+    .stat:nth-child(2n) { border-right: 0; }
+    .stat:nth-last-child(-n+2) { border-bottom: 0; }
+  }
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: .001ms !important; animation-iteration-count: 1 !important;
+      transition-duration: .001ms !important;
+    }
+    html { scroll-behavior: auto; }
+  }
 </style>
 </head>
 <body>
+<div class="grain" aria-hidden="true"></div>
 <div class="wrap">
 <header>
-  <h1>Ask the agent</h1>
-  <p class="sub">A git-native agent: the repository is the state, and every turn is a fresh job.</p>
+  <div class="brand">
+    <svg class="mark" viewBox="0 0 44 44" aria-hidden="true">
+      <defs>
+        <linearGradient id="markGrad" gradientUnits="userSpaceOnUse" x1="6" y1="38" x2="38" y2="6">
+          <stop offset="0" stop-color="#E3B778"/><stop offset="1" stop-color="#B99BE8"/>
+        </linearGradient>
+      </defs>
+      <!-- The containment gate: flow arrives, is decided, and leaves. -->
+      <path d="M3 22h13M28 22h13" stroke="url(#markGrad)" stroke-width="2.2" stroke-linecap="round" opacity=".85"/>
+      <rect x="16.6" y="11" width="2.4" height="22" rx="1.2" fill="url(#markGrad)"/>
+      <rect x="25" y="11" width="2.4" height="22" rx="1.2" fill="url(#markGrad)"/>
+      <circle class="markdot" cx="7" cy="22" r="2.2" fill="#E3B778"/>
+    </svg>
+    <h1>Ask the agent</h1>
+    
+  </div>
+  <p class="lede">A git-native agent: <b>the repository is the state</b>, and every turn is a fresh
+  job. No server, no database, and no dependency to install.</p>
   <nav>
     <a href="./index.html">Digest</a>
     <a href="./chat.html" aria-current="page">Ask</a>
   </nav>
 </header>
 
-
+<main>
+<blockquote><strong>Set the repository first.</strong> This page was rendered without
+       <code>GITHUB_REPOSITORY</code>, so the composer is pointing at a placeholder. Re-run the
+       render step inside the job and it will use the real slug.</blockquote>
 <p>This page composes a command and hands it to GitHub. It does not run anything, hold a
 credential, or call a model: you press the button, you are already signed in, and the reply
 lands as a comment in the thread.</p>
 <form id="composer">
-  <p>
-    <label for="verb">Command</label><br>
-    <select id="verb" name="verb" style="width:100%;max-width:520px;padding:10px;font-size:16px;">
-        <option value="why">why &lt;pkg&gt; — Look up the stored decision. No model.</option>
-        <option value="what-changed">what-changed — Everything that moved since the last run. No model.</option>
-        <option value="bump">bump &lt;pkg&gt; — Open a pull request; optionally run the suite in the sandbox.</option>
-        <option value="verify">verify &lt;pr&gt; — Run the suite against a patch in the sandbox.</option>
-        <option value="wrong">wrong &lt;pkg&gt; — Record that the decision was wrong. This is the calibration signal.</option>
-        <option value="pause">pause — Skip the schedule until resumed.</option>
-        <option value="resume">resume — Resume the schedule.</option>
-        <option value="explain">explain &lt;GHSA-…&gt; — The only verb that calls a model. Answer is marked unverified.</option>
+  <p class="field">
+    <label for="verb">Command</label>
+    <select id="verb" name="verb">
+        <option value="why">why &lt;pkg&gt;</option>
+        <option value="what-changed">what-changed</option>
+        <option value="bump">bump &lt;pkg&gt;</option>
+        <option value="verify">verify &lt;pr&gt;</option>
+        <option value="wrong">wrong &lt;pkg&gt;</option>
+        <option value="pause">pause</option>
+        <option value="resume">resume</option>
+        <option value="explain">explain &lt;GHSA-…&gt;</option>
     </select>
+    <span class="hint" id="help"></span>
   </p>
-  <p>
-    <label for="arg">Argument</label><br>
+  <p class="field">
+    <label for="arg" id="argLabel">Package</label>
     <input id="arg" name="arg" type="text" placeholder="lodash" autocomplete="off"
-           style="width:100%;max-width:520px;padding:10px;font-size:16px;">
+           aria-describedby="argHint">
+    <span class="hint" id="argHint"></span>
   </p>
-  <p id="preview" style="font-family:ui-monospace,SFMono-Regular,Menlo,monospace;background:var(--card);
-     border:1px solid var(--line);border-radius:6px;padding:10px;max-width:520px;">/agent why</p>
+  <p class="preview" id="preview" aria-live="polite">/agent why</p>
   <p>
-    <button type="submit" style="padding:10px 16px;font-size:16px;">Open as a GitHub issue</button>
+    <button type="submit" class="btn" id="submit">Open as a GitHub issue</button>
   </p>
 </form>
-<p style="color:var(--muted);font-size:13px;">
+<p class="hint">
   The reply is asynchronous — a job has to start, and that takes a minute, not a second.
   That is the price of there being no server.
 </p>
+</main>
 <script>
-  const REPO = "local/git-agent";
+  const VERBS = {"why":{"arg":"required","argLabel":"Package","placeholder":"lodash","hint":"A package name from your watch list.","help":"Look up the stored decision. No model."},"what-changed":{"arg":"optional","argLabel":"Since date","placeholder":"since 2026-09-01","hint":"Leave blank for everything, or narrow it to a date.","help":"Everything that moved since the last run. No model."},"bump":{"arg":"required","argLabel":"Package","placeholder":"lodash","hint":"A package name from your watch list.","help":"Open a pull request; optionally run the suite in the sandbox."},"verify":{"arg":"required","argLabel":"Pull request","placeholder":"128","hint":"A pull request number, or the pull request URL.","help":"Run the suite against a patch in the sandbox."},"wrong":{"arg":"required","argLabel":"Package","placeholder":"lodash","hint":"A package name from your watch list.","help":"Record that the decision was wrong. This is the calibration signal."},"pause":{"arg":"none","argLabel":"Package","placeholder":"lodash","hint":"This verb takes no argument.","help":"Skip the schedule until resumed."},"resume":{"arg":"none","argLabel":"Package","placeholder":"lodash","hint":"This verb takes no argument.","help":"Resume the schedule."},"explain":{"arg":"required","argLabel":"Advisory id","placeholder":"GHSA-…","hint":"A GHSA-… or CVE-… identifier, as it appears in the digest.","help":"The only verb that calls a model. Answer is marked unverified."}};
+  const REPO = "OWNER/REPO";
   const verb = document.getElementById('verb');
   const arg = document.getElementById('arg');
+  const argLabel = document.getElementById('argLabel');
+  const argHint = document.getElementById('argHint');
+  const help = document.getElementById('help');
   const preview = document.getElementById('preview');
+  const submit = document.getElementById('submit');
+
+  function spec() { return VERBS[verb.value]; }
 
   function command() {
-    const a = arg.value.trim();
+    const a = spec().arg === 'none' ? '' : arg.value.trim();
     return a ? '/agent ' + verb.value + ' ' + a : '/agent ' + verb.value;
   }
-  function render() { preview.textContent = command(); }
 
-  verb.addEventListener('change', render);
-  arg.addEventListener('input', render);
-  render();
+  // One place that decides what the form currently means: the labels, whether
+  // the argument field applies, whether the command is complete, and the
+  // preview. Anything that changes the form calls this.
+  function sync() {
+    const s = spec();
+    const takesArg = s.arg !== 'none';
+    help.textContent = s.help;
+    argLabel.textContent = s.argLabel;
+    arg.placeholder = s.placeholder;
+    argHint.textContent = s.hint;
+    arg.disabled = !takesArg;
+    if (!takesArg) arg.value = '';
+    // Disabled rather than rejected: a command missing its required argument is
+    // one the parser would refuse anyway, so the page does not offer to send it.
+    submit.disabled = s.arg === 'required' && !arg.value.trim();
+    preview.textContent = command();
+  }
+
+  verb.addEventListener('change', sync);
+  arg.addEventListener('input', sync);
+  sync();
 
   document.getElementById('composer').addEventListener('submit', (event) => {
     event.preventDefault();
