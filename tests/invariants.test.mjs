@@ -1918,3 +1918,46 @@ test('the run log chains, or is empty', () => {
   const result = checkHashChain(ROOT);
   assert.equal(result.ok, true);
 });
+
+/* ------------------------------------------------------ AGENTS.md index --- */
+
+/**
+ * GitHub's heading-anchor algorithm: lowercase, drop punctuation, spaces to
+ * hyphens. Kept here rather than imported because the *page* is the thing being
+ * modelled — if GitHub changes it, this test is where the mismatch surfaces.
+ */
+function headingAnchor(heading) {
+  return heading.toLowerCase().replace(/[^a-z0-9 -]/g, '').replace(/ /g, '-');
+}
+
+/**
+ * The index at the top of AGENTS.md is a navigation aid, and a navigation aid
+ * that has silently rotted is worse than none: a dead anchor reads as "that
+ * rule moved" when the rule is still there, one screen further down.
+ *
+ * So it is checked in **both** directions — every link resolves to a heading,
+ * and every invariant heading is reachable from a link. The second direction is
+ * the one that matters: a new rule added without an index entry is invisible to
+ * exactly the reader the index exists for.
+ *
+ * The index deliberately restates no enforcement, so there is nothing here to
+ * drift but the links — and those are what is asserted.
+ */
+test('the AGENTS.md index resolves, and covers every invariant', () => {
+  const agents = fs.readFileSync(path.join(ROOT, 'AGENTS.md'), 'utf8');
+
+  const headings = [...agents.matchAll(/^#{2,3}[ \t]+(.+)$/gm)].map((m) => m[1].trim());
+  const anchors = new Set(headings.map(headingAnchor));
+
+  const links = [...agents.matchAll(/\]\(#([a-z0-9-]+)\)/g)].map((m) => m[1]);
+  assert.ok(links.length > 0, 'the index declares no links, so this check would pass vacuously');
+
+  const dead = links.filter((l) => !anchors.has(l));
+  assert.deepEqual(dead, [], `index links with no matching heading: ${dead.join(', ')}`);
+
+  const invariantHeadings = headings.filter((h) => /^I\d+ — /.test(h));
+  assert.ok(invariantHeadings.length > 0, 'no invariant headings matched — the pattern has drifted');
+
+  const unlinked = invariantHeadings.filter((h) => !links.includes(headingAnchor(h)));
+  assert.deepEqual(unlinked, [], `invariants missing from the index: ${unlinked.join(', ')}`);
+});

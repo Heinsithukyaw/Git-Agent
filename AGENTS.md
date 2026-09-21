@@ -12,6 +12,38 @@ front-end build step, and no vendor of ours in the loop.
 
 ---
 
+## Index
+
+Seven sections and sixteen invariants. Each invariant is a rule only because a check
+enforces it, so this index links to a rule rather than restating its enforcement: an
+enforcement claim copied into a second place is a claim that can drift, and the rule's own
+section is where the check is named.
+
+**[§0 The one sentence](#0-the-one-sentence)** — the premise everything below follows from.
+
+**§1 Invariants** — sixteen rules, in order.
+
+- [I1 — One privilege per job](#i1--one-privilege-per-job)
+- [I2 — The gate decides, and the gate cannot be hijacked](#i2--the-gate-decides-and-the-gate-cannot-be-hijacked)
+- [I3 — Bounded writes, fail-closed](#i3--bounded-writes-fail-closed)
+- [I4 — Everything is behind the change gate except one file](#i4--everything-is-behind-the-change-gate-except-one-file)
+- [I5 — Append-only history, hash-chained](#i5--append-only-history-hash-chained)
+- [I6 — Commands are parsed, never interpreted](#i6--commands-are-parsed-never-interpreted)
+- [I7 — The sandbox never receives a secret, and ships off by default](#i7--the-sandbox-never-receives-a-secret-and-ships-off-by-default)
+- [I8 — No provider names in the code](#i8--no-provider-names-in-the-code)
+- [I9 — The agent is fully useful with no model key](#i9--the-agent-is-fully-useful-with-no-model-key)
+- [I10 — The web surface holds no key and calls no model](#i10--the-web-surface-holds-no-key-and-calls-no-model)
+- [I11 — Honesty about time, and about what is missing](#i11--honesty-about-time-and-about-what-is-missing)
+- [I12 — Third-party actions are pinned to a commit](#i12--third-party-actions-are-pinned-to-a-commit)
+- [I13 — The cheap guard mirrors the real gate](#i13--the-cheap-guard-mirrors-the-real-gate)
+- [I14 — The configuration surface agrees with its documentation, both ways](#i14--the-configuration-surface-agrees-with-its-documentation-both-ways)
+- [I15 — A file that crosses a job boundary travels as an artifact](#i15--a-file-that-crosses-a-job-boundary-travels-as-an-artifact)
+- [I16 — The public surface is projected, and the renderer reads only the projection](#i16--the-public-surface-is-projected-and-the-renderer-reads-only-the-projection)
+
+**[§2 Where this runs](#2-where-this-runs)** · **[§3 Layout](#3-layout)** · **[§4 Local development](#4-local-development)** · **[§5 Adding things](#5-adding-things)** · **[§6 When a check fires](#6-when-a-check-fires)**
+
+---
+
 ## 0. The one sentence
 
 **The repository is the instance, and git is the only durable store.**
