@@ -656,10 +656,11 @@ be filtered, so dropping it dissolves that route by construction. What remains a
 
 **The half that is not built is the other direction.** There is no
 `config/private.json`, so nothing prevents a private package from being fetched
-and sent to the model — the disclosure `REPORT.md` §5.4 describes. The publication
-allowlist closed the irreversible direction first, and deliberately so: a name
-sent to an endpoint the user chose can be rotated, while a name published cannot
-be recalled.
+and sent to the model — a disclosure of your dependency inventory to whichever
+endpoint you configured, and one that is recoverable only by rotating the key.
+The publication allowlist closed the irreversible direction first, and
+deliberately so: a name sent to an endpoint the user chose can be rotated, while
+a name published cannot be recalled.
 
 Four consequences that shape what may be committed here:
 

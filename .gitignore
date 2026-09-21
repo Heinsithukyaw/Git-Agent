@@ -27,3 +27,15 @@ node_modules/
 # material the pre-publication audit exists to keep out of a public tree. The
 # audit cannot see them, so `git add -A` would publish them.
 deliverables/
+
+# Design archaeology — the pre-code feasibility report and the architecture
+# review. Kept on disk for the maintainer, deliberately not shipped: the report
+# is a study of the harness this template was derived from, and the review
+# enumerates the design's own open findings.
+#
+# Both were tracked from the initial commit until a history rewrite dropped them,
+# so they are absent from every commit and not merely from HEAD. `.gitignore`
+# governs untracked paths, and both are untracked now, which is what keeps them
+# that way. Committing either again takes `git add -f`.
+REPORT.md
+ARCHITECTURE-REVIEW.md
