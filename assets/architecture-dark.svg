@@ -1,0 +1,251 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 776" width="1200" height="776" role="img" aria-labelledby="archTitle archDesc">
+  <!-- 
+    Git Agent — README architecture diagram (dark).
+
+    Scope: the runtime, in one canvas. Two surfaces (the scheduled run, the
+    conversational turn), the store they both write, and what a reader sees.
+    Every box is a real job or a real path in the tree; every label on a wire is
+    the thing that crosses it. Nothing here is aspirational — if a component
+    moves, this file is wrong until it is redrawn.
+
+    Styling: the palette is site/index.html (:root), so the artwork, the Pages
+    site and the digest are visibly one product. Generated from architecture.svg by palette
+    substitution, so the geometry cannot drift. Change one, change the other. Type is sized for
+    GitHub's ~948px content column, where this scales to ~0.79.
+
+    Animation: CSS only — there is no JavaScript and no external reference,
+    because this renders inside an <img>. Motion is additive: with animation
+    off, every trace is fully drawn and every label is legible.
+      .pulse   a dash travels each connector (pathLength="100" normalises the
+               dash maths, so one keyframe fits every wire regardless of length);
+               staggered delays make the flow read top to bottom.
+      .ants    marching dashes on the two conditional edges.
+      .breathe the containment gate, the one control that decides what is written.
+    All three collapse under @media (prefers-reduced-motion: reduce).
+
+    Labels: every label is sized to its frame, and that is worth re-checking
+    whenever one changes. Render each run in isolation and compare its ink with
+    the frame it belongs to, associating by the label's CENTRE and never by
+    containment — a label that overflows its own chip still lies inside the box
+    behind it, so a containment test passes forever. The gate badge once held
+    123px of text in a 110px pill and bled 7px each side: invisible at a glance,
+    obvious at 2x.
+   -->
+  <title id="archTitle">Architecture — one repository, two surfaces, four jobs</title>
+  <desc id="archDesc">The daily run: fetch reads advisory feeds and registries, narrate holds the model key, commit runs the containment gate and writes, heartbeat runs only if a job failed. Each hop is carried by an artifact. A comment starts a turn: route parses the verb, the cheap path answers seven verbs with no model, explain answers one with the model, reply posts and appends. Both surfaces write to git — data, history, digest, site and one region of the README — and a reader sees the result as an issue comment, the README digest, an optional Pages site, or a pull request.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .panel { fill: #0d1117; stroke: #232a33; stroke-width: 1; }
+    .hair { stroke: #232a33; stroke-width: 1; fill: none; }
+    .box { fill: #131a22; stroke: #2b333d; stroke-width: 1; }
+    .box-q { fill: #131a22; stroke: #3d4753; stroke-width: 1.5; stroke-dasharray: 5 4; }
+    .band { fill: #131a22; stroke: #232a33; stroke-width: 1; }
+    .chip { fill: #0d1117; stroke: #232a33; stroke-width: 1; }
+    .ink { fill: #e6edf3; }
+    .muted { fill: #9aa7b4; }
+    .acc { fill: #58a6ff; }
+    .wire { stroke: #566173; stroke-width: 2; fill: none; }
+    .wire-q { stroke: #3d4753; stroke-width: 1.75; fill: none; stroke-dasharray: 5 4; }
+    .stripe-r { stroke: #5f6b7a; stroke-width: 4; stroke-linecap: round; fill: none; }
+    .stripe-k { stroke: #58a6ff; stroke-width: 4; stroke-linecap: round; fill: none; }
+    .stripe-w { stroke: #e6edf3; stroke-width: 4; stroke-linecap: round; fill: none; }
+    .badge { fill: #0d1117; stroke: #58a6ff; stroke-width: 1; }
+    .eyebrow { font-size: 13px; letter-spacing: 2.2px; }
+    .title { font-size: 22px; font-weight: 600; }
+    .sub { font-size: 15px; }
+    .colhead { font-size: 13px; letter-spacing: 1.8px; }
+    .faint { font-size: 13px; letter-spacing: 1.8px; fill: #6e7781; }
+    .job { font-size: 19px; font-weight: 600; }
+    .priv { font-size: 14.5px; }
+    .lbl { font-size: 11.5px; letter-spacing: .6px; }
+    .bandhead { font-size: 12.5px; letter-spacing: 1.6px; }
+    .chipname { font-size: 14px; font-weight: 600; }
+    .chipsub { font-size: 11.5px; }
+    .legend { font-size: 13px; }
+    .badge-t { font-size: 11px; letter-spacing: 1.2px; }
+    .pulse {
+      stroke: #58a6ff; stroke-width: 3; stroke-linecap: round; fill: none;
+      stroke-dasharray: 18 200; stroke-dashoffset: 0; opacity: 0;
+      animation: travel 5s linear infinite;
+    }
+    .d1 { animation-delay: .5s; }
+    .d2 { animation-delay: 1s; }
+    .d3 { animation-delay: 1.5s; }
+    .d4 { animation-delay: 2s; }
+    @keyframes travel {
+      0%   { stroke-dashoffset: 0;    opacity: 0; }
+      4%   { opacity: .95; }
+      34%  { stroke-dashoffset: -100; opacity: .95; }
+      38%  { stroke-dashoffset: -100; opacity: 0; }
+      100% { stroke-dashoffset: -218; opacity: 0; }
+    }
+    .ants { animation: march 1.1s linear infinite; }
+    @keyframes march { to { stroke-dashoffset: -9; } }
+    .breathe { fill: none; stroke: #58a6ff; stroke-width: 1.5; animation: breathe 3.4s ease-in-out infinite; }
+    @keyframes breathe { 0%, 100% { opacity: .35; } 50% { opacity: 1; } }
+    @media (prefers-reduced-motion: reduce) {
+      .pulse { animation: none; opacity: 0; }
+      .ants { animation: none; }
+      .breathe { animation: none; opacity: 1; }
+    }
+  </style>
+  <defs>
+    <marker id="head" viewBox="0 0 8 8" refX="6.2" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0.6 0.9 L7 4 L0.6 7.1 Z" fill="#566173"/>
+    </marker>
+    <marker id="headq" viewBox="0 0 8 8" refX="6.2" refY="4" markerWidth="5" markerHeight="5" orient="auto-start-reverse">
+      <path d="M0.6 0.9 L7 4 L0.6 7.1 Z" fill="#3d4753"/>
+    </marker>
+  </defs>
+
+  <rect class="panel" x="0.5" y="0.5" width="1199" height="775" rx="14"/>
+
+  <text class="mono eyebrow muted" x="56" y="54">RUNTIME ARCHITECTURE · DATA AND CONTROL FLOW</text>
+  <text class="mono eyebrow acc" x="1144" y="54" text-anchor="end">NO SERVER · NO DATABASE · NO BUILD STEP</text>
+  <path class="hair" d="M56 78 H1144"/>
+
+  <text class="sans title ink" x="56" y="116">One repository, two surfaces, four jobs</text>
+  <text class="sans sub muted" x="56" y="142">A scheduled run writes the digest; a comment starts a turn. Both write to git, and no component holds two privileges.</text>
+
+  <rect x="940" y="106" width="12" height="12" rx="3" fill="none" stroke="#5f6b7a" stroke-width="1.5"/>
+  <text class="mono legend muted" x="958" y="116">read</text>
+  <rect class="acc" x="1000" y="106" width="12" height="12" rx="3"/>
+  <text class="mono legend ink" x="1018" y="116">key</text>
+  <rect class="ink" x="1058" y="106" width="12" height="12" rx="3"/>
+  <text class="mono legend ink" x="1076" y="116">write</text>
+
+  <!--  ============================================================= left ====  -->
+  <text class="mono colhead ink" x="56" y="176">THE DAILY RUN<tspan class="faint"> · digest.yml · 06:17 UTC</tspan></text>
+
+  <path class="wire" d="M326 254 V282" marker-end="url(#head)"/>
+  <path class="pulse" pathLength="100" d="M326 254 V282"/>
+  <text class="mono lbl muted" x="340" y="272">payload</text>
+
+  <path class="wire" d="M326 346 V374" marker-end="url(#head)"/>
+  <path class="pulse d1" pathLength="100" d="M326 346 V374"/>
+  <text class="mono lbl muted" x="340" y="364">run-state</text>
+
+  <path class="wire-q ants" d="M326 438 V466" marker-end="url(#headq)"/>
+  <text class="mono lbl muted" x="340" y="456">only if a job failed</text>
+
+  <rect class="box" x="56" y="196" width="540" height="58" rx="10"/>
+  <path class="stripe-r" d="M74 211 V239"/>
+  <text class="mono job ink" x="92" y="221">fetch</text>
+  <text class="sans priv muted" x="92" y="240">reads registries and advisory feeds · no key</text>
+
+  <rect class="box" x="56" y="288" width="540" height="58" rx="10"/>
+  <path class="stripe-k" d="M74 303 V331"/>
+  <text class="mono job ink" x="92" y="313">narrate</text>
+  <text class="sans priv muted" x="92" y="332">triages, then narrates · <tspan class="acc">model key</tspan></text>
+
+  <rect class="box" x="56" y="380" width="540" height="58" rx="10"/>
+  <path class="stripe-w" d="M74 395 V423"/>
+  <text class="mono job ink" x="92" y="405">commit</text>
+  <text class="sans priv muted" x="92" y="424">runs the gate, then writes · <tspan class="ink">write token</tspan></text>
+  <rect class="breathe" x="419" y="393" width="160" height="32" rx="16"/>
+  <rect class="badge" x="424" y="398" width="150" height="22" rx="11"/>
+  <text class="mono badge-t acc" x="499" y="413" text-anchor="middle">CONTAINMENT GATE</text>
+
+  <rect class="box-q" x="56" y="472" width="540" height="58" rx="10"/>
+  <path class="stripe-w" d="M74 487 V515"/>
+  <text class="mono job ink" x="92" y="497">heartbeat</text>
+  <text class="sans priv muted" x="92" y="516">always commits one file · <tspan class="ink">write token</tspan></text>
+
+  <!--  ============================================================ right ====  -->
+  <text class="mono colhead ink" x="636" y="176">THE TURN<tspan class="faint"> · ask.yml · issue_comment</tspan></text>
+
+  <path class="wire" d="M890 254 V282" marker-end="url(#head)"/>
+  <path class="pulse" pathLength="100" d="M890 254 V282"/>
+  <text class="mono lbl muted" x="904" y="272">comment body</text>
+
+  <path class="wire" d="M890 346 V360"/>
+  <path class="wire" d="M890 360 H759 V374" marker-end="url(#head)"/>
+  <path class="wire" d="M890 360 H1021 V374" marker-end="url(#head)"/>
+  <path class="pulse d2" pathLength="100" d="M890 360 H759 V374"/>
+  <path class="pulse d2" pathLength="100" d="M890 360 H1021 V374"/>
+
+  <path class="wire" d="M759 438 V452 H890 V466" marker-end="url(#head)"/>
+  <path class="wire" d="M1021 438 V452 H890 V466" marker-end="url(#head)"/>
+  <path class="pulse d3" pathLength="100" d="M759 438 V452 H890 V466"/>
+  <path class="pulse d3" pathLength="100" d="M1021 438 V452 H890 V466"/>
+
+  <rect class="box" x="636" y="196" width="508" height="58" rx="10"/>
+  <path class="stripe-r" d="M654 211 V239"/>
+  <text class="mono job ink" x="672" y="221">comment</text>
+  <text class="sans priv muted" x="672" y="240">one comment · parsed, never interpreted</text>
+
+  <rect class="box" x="636" y="288" width="508" height="58" rx="10"/>
+  <path class="stripe-r" d="M654 303 V331"/>
+  <text class="mono job ink" x="672" y="313">route</text>
+  <text class="sans priv muted" x="672" y="332">allowlisted verb, author gate · no key</text>
+
+  <rect class="box" x="636" y="380" width="246" height="58" rx="10"/>
+  <path class="stripe-r" d="M654 395 V423"/>
+  <text class="mono job ink" x="672" y="405">lookup</text>
+  <text class="sans priv muted" x="672" y="424">7 verbs · no model</text>
+
+  <rect class="box" x="898" y="380" width="246" height="58" rx="10"/>
+  <path class="stripe-k" d="M916 395 V423"/>
+  <text class="mono job ink" x="934" y="405">explain</text>
+  <text class="sans priv muted" x="934" y="424">1 verb · <tspan class="acc">model key</tspan></text>
+
+  <rect class="box" x="636" y="472" width="508" height="58" rx="10"/>
+  <path class="stripe-w" d="M654 487 V515"/>
+  <text class="mono job ink" x="672" y="497">reply</text>
+  <text class="sans priv muted" x="672" y="516">posts a comment, appends to history · <tspan class="ink">write token</tspan></text>
+
+  <!--  ======================================================= the writes ====  -->
+  <path class="wire" d="M596 409 H610 Q618 409 618 417 V556" marker-end="url(#head)"/>
+  <text class="mono lbl muted" transform="rotate(-90 612 488)" x="612" y="488" text-anchor="middle">bounded writes</text>
+  <path class="wire-q ants" d="M596 501 H618"/>
+  <path class="wire" d="M890 530 V556" marker-end="url(#head)"/>
+  <text class="mono lbl muted" x="902" y="546">appends to history</text>
+
+  <!--  ========================================================== the store ==  -->
+  <rect class="band" x="56" y="562" width="1088" height="94" rx="12"/>
+  <text class="mono bandhead muted" x="76" y="586">THE STORE · GIT IS THE ONLY DURABLE STATE</text>
+
+  <rect class="chip" x="76" y="598" width="196" height="42" rx="8"/>
+  <text class="mono chipname ink" x="92" y="617">data/</text>
+  <text class="sans chipsub muted" x="92" y="633">state · change-gated</text>
+
+  <rect class="chip" x="284" y="598" width="196" height="42" rx="8"/>
+  <text class="mono chipname ink" x="300" y="617">history/</text>
+  <text class="sans chipsub muted" x="300" y="633">append-only · hash-chained</text>
+
+  <rect class="chip" x="492" y="598" width="196" height="42" rx="8"/>
+  <text class="mono chipname ink" x="508" y="617">digest/</text>
+  <text class="sans chipsub muted" x="508" y="633">dated archive</text>
+
+  <rect class="chip" x="700" y="598" width="196" height="42" rx="8"/>
+  <text class="mono chipname ink" x="716" y="617">site/</text>
+  <text class="sans chipsub muted" x="716" y="633">Pages · opt-in</text>
+
+  <rect class="chip" x="908" y="598" width="196" height="42" rx="8"/>
+  <text class="mono chipname ink" x="924" y="617">README.md</text>
+  <text class="sans chipsub muted" x="924" y="633">one regenerated region</text>
+
+  <path class="wire" d="M326 656 V674" marker-end="url(#head)"/>
+  <text class="mono lbl muted" x="340" y="668">rendered from the committed state</text>
+
+  <!--  ========================================================= the output ==  -->
+  <rect class="band" x="56" y="680" width="1088" height="80" rx="12"/>
+  <text class="mono bandhead muted" x="76" y="704">WHAT YOU READ</text>
+
+  <rect class="chip" x="76" y="712" width="252" height="40" rx="8"/>
+  <text class="mono chipname ink" x="92" y="731">rolling issue</text>
+  <text class="sans chipsub muted" x="92" y="746">the digest, as a comment</text>
+
+  <rect class="chip" x="340" y="712" width="252" height="40" rx="8"/>
+  <text class="mono chipname ink" x="356" y="731">README region</text>
+  <text class="sans chipsub muted" x="356" y="746">rewritten between markers</text>
+
+  <rect class="chip" x="604" y="712" width="252" height="40" rx="8"/>
+  <text class="mono chipname ink" x="620" y="731">Pages site</text>
+  <text class="sans chipsub muted" x="620" y="746">opt-in · site/index.html</text>
+
+  <rect class="chip" x="868" y="712" width="252" height="40" rx="8"/>
+  <text class="mono chipname ink" x="884" y="731">pull request</text>
+  <text class="sans chipsub muted" x="884" y="746">opened by /agent bump</text>
+</svg>

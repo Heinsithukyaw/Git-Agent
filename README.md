@@ -22,7 +22,117 @@ Four zeros and a four, and none of them is a measurement. `dependencies` is empt
 secret at all; and `digest.yml` is four jobs because **no job may hold both a model key and
 a write token**.
 
-**Jump to:** [The digest](#the-digest) · [Set it up](#set-it-up) · [How you talk to it](#how-you-talk-to-it) · [Commands](#commands) · [Where it runs](#where-it-runs) · [What it costs you](#what-it-costs-you)
+**Jump to:** [Overview](#overview) · [Features](#features) · [Architecture](#architecture) ·
+[The digest](#the-digest) · [Set it up](#set-it-up) · [How you talk to it](#how-you-talk-to-it) ·
+[Commands](#commands) · [Where it runs](#where-it-runs) · [What it costs you](#what-it-costs-you)
+
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/divider-dark.svg">
+  <img src="./assets/divider.svg" width="1200" alt="">
+</picture>
+
+## Overview
+
+Git Agent turns dependency hygiene into a passive, reviewable artifact instead of a chore. A
+machine you never pay for wakes up each morning, asks the world whether anything in your
+watch list has moved, decides what is worth a human's attention, writes a digest to the
+repository, and goes away. The machine is stateless; the state is the git history.
+
+Nothing is invented about the way it runs. Every claim above is a property of the tree that
+the [invariants](#rules-this-repository-is-built-on) in `AGENTS.md` enforce on every CI run.
+A property the repository cannot prove is not a property; that is the standard the rest of
+this document is held to.
+
+## Features
+
+- **Zero surface area.** No servers to provision, no ports to open, no databases to back up.
+  The repository is the deployment, and a clone is a backup.
+- **Auditable by construction.** Every run leaves a hash-chained record of what was seen and
+  what was decided. Six months later, the question "why did we bump this?" has a one-line
+  answer in `history/`.
+- **One privilege per job.** A scheduled job either holds a secret or it holds a write
+  token; never both. The thing that decides what gets written cannot be influenced by the
+  thing that was asked, because they do not run in the same process.
+- **Two surfaces, one store.** A daily run writes the digest; a comment on the rolling issue
+  answers a question. Both write to the same git, both respect the same allowlists, and
+  neither can reach the other.
+- **No narration by default.** A keyless instance still produces a complete digest, because
+  the rule layer decides everything it can and only delegates what it must. A broken key
+  reads as a gap with a name, never as a clean miss.
+- **Honest defaults.** Counts on the public surface are derived *after* the publication
+  projection, so `packages: 6` next to a page showing two rows states the size of what was
+  withheld. A timestamp says *as of 06:12 UTC*, not *today*.
+- **Refuses, rather than degrades, the wrong thing.** A package name not on the watch list,
+  a verb not on the allowlist, or a third-party action pinned to a tag are all errors with
+  a reason, not warnings to scroll past.
+
+## Architecture
+
+<!--
+  assets/architecture.svg ··· scope, styling, and animation.
+
+  Scope   The runtime, in one canvas: the scheduled run (digest.yml), the
+          conversational turn (ask.yml), the store they both write, and what
+          a reader sees. Every box is a real job or a real path in the tree;
+          every wire label is the thing that crosses it. Aspiration has no
+          place here — if a component moves, this file is wrong until it is
+          redrawn.
+
+  Style   Hand-built SVG. The artwork carries its own palette — the blue at
+          #0b62d6 — and site/index.html carries a separate dark one. The two
+          are deliberately not derived from each other: this file is read on
+          GitHub's light surface, and the Pages site is a dark page of its own.
+          Two files (architecture.svg, architecture-dark.svg) share the same
+          geometry; the dark twin is produced by a palette substitution so they
+          cannot drift apart. Typography is the system stack, sized for
+          GitHub's ~948px content column (this scales to ~0.79 there).
+
+  Motion  CSS only. There is no JavaScript and no external reference,
+          because this renders inside an <img>. Three layers:
+            .pulse   a dash travels each connector, normalised by
+                     pathLength="100" so one keyframe fits every wire;
+                     staggered delays make the flow read top-to-bottom.
+            .ants    marching dashes on the two conditional edges
+                     (heartbeat branch, heartbeat stub).
+            .breathe the containment gate, the one control that decides
+                     what is written.
+          All three collapse under prefers-reduced-motion: reduce. Every
+          trace is fully drawn and every label is legible with motion off.
+
+  Place   This block sits once, under "## Architecture". Do not embed the
+            SVG inline; the <picture> pair is how the dark mode switch works
+            on GitHub. Do not duplicate it elsewhere in the document — the
+            diagram is the one canonical view of the system.
+
+  Length  1200x776, ~615px tall at README width. It is the largest single
+            block in the file by design; sections above it (Overview,
+            Features) are intentionally compact so the diagram still sits
+            above the fold on a laptop. Do not move it below "## The
+            digest", which is the daily surface and must stay near the top.
+
+  Labels  Every label is sized to its frame. If one changes, re-measure it:
+            render the runs in isolation and compare each label's ink with the
+            frame it belongs to, associating by the label's centre — never by
+            containment, because a label that overflows its own chip still
+            lies inside the box behind it and a containment test passes
+            forever. The gate badge once carried 123px of text in a 110px
+            pill, bleeding 7px a side; invisible at a glance, obvious at 2x.
+-->
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/architecture-dark.svg">
+  <img src="./assets/architecture.svg" width="1200" alt="Architecture: the daily run writes the digest (fetch reads advisory feeds and registries, narrate holds the model key, commit runs the containment gate and writes, heartbeat runs only if a job failed); the turn answers a comment (route parses the verb, lookup answers seven verbs with no model, explain answers one with the model, reply posts and appends). Both write to git — data, history, digest, site and one region of the README — and a reader sees the result as an issue comment, the README digest, an optional Pages site, or a pull request.">
+</picture>
+
+The diagram reads top to bottom. The left side is the daily run — `fetch → narrate → commit`,
+each hop carried by an artifact, with `heartbeat` hanging below `fetch` on the dashed edge
+that runs only when something failed. The right side is the turn — a comment on the rolling
+issue, the cheap path that answers seven of the eight verbs with no model, the `explain`
+branch that holds the model key, and the `reply` that posts and appends. Both surfaces write
+to the same git; the bands at the bottom are the store they share and the surfaces a reader
+actually sees.
+
+Every invariant behind the picture lives in [`AGENTS.md`](./AGENTS.md), and every invariant is
+enforced by a check in `.github/workflows/ci.yml`.
 
 <picture>
   <source media="(prefers-color-scheme: dark)" srcset="./assets/divider-dark.svg">
@@ -53,11 +163,11 @@ a complete digest.
 1. **Use this template** — not a fork. A fork of a public repository is public and cannot be
    made private. See [Where it runs](#where-it-runs).
 
-2. **Edit `data/stack.json`.** The packages you want watched, and for each one the symbols
-   you import. The file has three jobs: it is the watch list, the argument allowlist
-   (`/agent bump <pkg>` accepts only a name that appears here), and — in the three
-   `public_*` lists — the publication allowlist. **Anything not listed as public is not
-   publishable**, so an instance watching private packages should list only what it is
+2. **Edit `data/stack.json`.** It is the watch list of packages you want followed, and for
+   each one the symbols you import. The file has three jobs: it is the watch list, the
+   argument allowlist (`/agent bump <pkg>` accepts only a name that appears here), and — in
+   the three `public_*` lists — the publication allowlist. **Anything not listed as public is
+   not publishable**, so an instance watching private packages should list only what it is
    willing to publish.
 
 3. **Set the repository variables** (Settings → Secrets and variables → Actions →
@@ -73,8 +183,8 @@ a complete digest.
    Some gateways reject a request *before* they read the key: a relay behind a whitelist of
    known client identities answers anything else with `401 unauthorized client detected`, so
    a valid key is refused and the error names the client rather than the credential. Set
-   `LLM_USER_AGENT` to an identity that gateway accepts and the header is sent; leave it
-   unset and the request is byte-identical to what it was before.
+   `LLM_USER_AGENT` to an identity the gateway accepts and the header is sent; leave it unset
+   and the request is byte-identical to what it was before.
 
 4. **Optionally set one secret — `LLM_API_KEY`.** Without it the agent still runs: the rules
    tier produces the whole digest and no model is contacted. That is a complete product, not
@@ -124,7 +234,7 @@ The composer is a **composer, not a client**. It has no key, calls no model, and
 trigger a workflow — a static page cannot dispatch one without a token embedded in it, and
 that is enforced by GitHub, not by discipline.
 
-## What it does every run
+### What it does every run
 
 Three jobs on the normal path, split along the privilege boundary rather than the logical
 one, plus a fourth that only runs when the first one fails:
@@ -273,7 +383,7 @@ as a job takes to start, which is a minute, not a second.
   <img src="./assets/divider.svg" width="1200" alt="">
 </picture>
 
-## Layout
+## Layout & local development
 
 ```
 .github/workflows/   digest (4 jobs) · ask (3 jobs) · act · sandbox · pages · ci
@@ -294,8 +404,6 @@ README.md            regenerated between markers
 LICENSE              MIT — the notice a copy has to carry
 ```
 
-## Local development
-
 ```bash
 npm test                     # unit tests, no network
 npm run check                # the invariants, over the workflows on disk
@@ -307,7 +415,7 @@ npm run site                 # regenerate site/ from the committed state
 `fetch` and `narrate` are read-only and safe to run locally. `commit` writes — run it only
 in CI unless you know why you are running it.
 
-## The rules this repository is built on
+## Rules this repository is built on
 
 `AGENTS.md` states them, and each is enforced by a check in `ci.yml` or it is not a rule at
 all — a preference is a rule that erodes. The short version:
