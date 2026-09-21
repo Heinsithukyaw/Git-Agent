@@ -291,6 +291,7 @@ tools/               the invariant checks, as a CLI
 AGENTS.md            the rules — every one of them enforced by a check
 SECURITY.md          what is in scope for a report, and what is not
 README.md            regenerated between markers
+LICENSE              MIT — the notice a copy has to carry
 ```
 
 ## Local development
@@ -342,3 +343,11 @@ all — a preference is a rule that erodes. The short version:
 - **Honest about time.** A digest is stamped with the observation time, never with the
   schedule. "As of 06:12 UTC" is honest; "today's briefing" is a small lie that will
   eventually be caught.
+
+## License
+
+MIT — `LICENSE` holds the text. Use it, template it, sell what you build with it; the
+copyright notice is the one thing that has to travel with a copy.
+
+The artwork is under the same terms and owes no attribution: `assets/*.svg` are hand-built,
+with no external references and nothing borrowed.

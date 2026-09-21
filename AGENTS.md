@@ -723,6 +723,7 @@ assets/              README artwork — hand-built SVG, light and dark, no exter
 site/                index.html (digest view) · chat.html (composer)
 README.md            regenerated between markers
 SECURITY.md          what is in scope for a report, and what is not
+LICENSE              MIT — the notice a copy has to carry
 ```
 
 The five named modules in `lib/` are the documented surface. Everything else in
