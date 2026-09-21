@@ -528,6 +528,12 @@ test('the public heartbeat drops the private fields rather than coarsening them'
     last_run_at: 'T',
     last_status: 'degraded',
   });
+  // A withheld surface outranks the error list, which is empty by construction on
+  // that path: withholding publishes nothing, so nothing failed.
+  assert.deepEqual(publicHeartbeat(hb, [], 'invalid-marker'), {
+    last_run_at: 'T',
+    last_status: 'withheld',
+  });
   assert.deepEqual(publicHeartbeat(null, []), { last_run_at: null, last_status: 'ok' });
   assert.deepEqual(Object.keys(publicHeartbeat(hb, [])), ['last_run_at', 'last_status']);
 });
@@ -547,6 +553,56 @@ test('both heartbeat placements agree, and a narration gap is not a public fact'
   const published = JSON.stringify(surface.summary);
   assert.ok(!published.includes('consecutive_failures'));
   assert.ok(!published.includes('last_success_at'));
+});
+
+test('a withheld surface publishes `withheld`, and both placements agree on it', () => {
+  // Withholding publishes nothing, so the published error list is empty and a
+  // derivation from it yields `ok` — printed beside a `withheld_reason` saying the
+  // digest was withheld. `scripts/render-site.mjs` resolved that contradiction for
+  // the *page*, but `data/public-summary.json` is a published artifact with
+  // machine readers, and it carried both fields disagreeing in one object. The
+  // reason is itself a published fact, so the status is derived from it.
+  const broken = stack();
+  delete broken.public_feeds;
+  const surface = buildPublicSurface({
+    payload: payload(),
+    decisions: decisions(),
+    stack: broken,
+    heartbeat: HEARTBEAT,
+  });
+
+  assert.equal(surface.summary.withheld_reason, 'invalid-marker');
+  assert.equal(surface.summary.last_status, 'withheld');
+  assert.equal(surface.summary.heartbeat.last_status, 'withheld');
+  assert.equal(
+    surface.summary.last_status,
+    surface.summary.heartbeat.last_status,
+    'the top-level scalar and the nested object the page reads cannot disagree',
+  );
+
+  // The derivation is not hardcoded to `withheld`: the same call with a readable
+  // marker and no published error publishes a quiet `ok`, so the status is a
+  // response to the reason rather than to the branch it took.
+  const healthy = buildPublicSurface({
+    payload: { ...payload(), errors: [] },
+    decisions: decisions(),
+    stack: stack(),
+    heartbeat: HEARTBEAT,
+  });
+  assert.equal(healthy.summary.withheld_reason, undefined);
+  assert.equal(healthy.summary.last_status, 'ok');
+
+  // A deny-all is a supported silent mode rather than a withheld surface, and it
+  // must keep publishing as a quiet day — the whole point of the split. No errors,
+  // so nothing else moves the status either.
+  const denyAll = buildPublicSurface({
+    payload: { ...payload(), errors: [] },
+    decisions: decisions(),
+    stack: stack({ public_packages: [], public_upstreams: [], public_feeds: [] }),
+    heartbeat: HEARTBEAT,
+  });
+  assert.equal(denyAll.summary.withheld_reason, undefined);
+  assert.equal(denyAll.summary.last_status, 'ok', 'a deny-all is not withheld');
 });
 
 test('a failure bound to a private name publishes the same status as no failure at all', () => {
