@@ -29,6 +29,7 @@ import {
   checkAuthorGateMirrorsScript,
   checkConfigSurface,
   checkArtifactHandoff,
+  checkPublicRendererReadsNoPrivatePath,
   runAll,
 } from '../lib/invariants.mjs';
 import { CI_ALLOWLIST } from '../lib/store.mjs';
@@ -970,6 +971,127 @@ test('the repository carries every cross-job file, and the check is not vacuous'
     result.checked >= 6,
     `the pipeline has at least six cross-job handoffs; saw ${result.checked}, which suggests the scan found nothing`,
   );
+});
+
+/* ------------------------------------------------- I16 public renderer --- */
+
+/**
+ * A synthetic `scripts/render-site.mjs` with the shape the real one has: it reads
+ * the projected summary by constant, and narrows the digest directory to the
+ * shared prefix. Every case below is this file with exactly one thing changed,
+ * so a violation can only be attributed to that change.
+ */
+const PUBLIC_RENDERER_SRC = [
+  "import fs from 'node:fs';",
+  "import { PUBLIC_DIGEST_PREFIX, PUBLIC_SUMMARY } from '../lib/public-surface.mjs';",
+  'const summary = readJson(PUBLIC_SUMMARY);',
+  "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+  '',
+].join('\n');
+
+/** The surface the check reads `PUBLIC_SUMMARY`'s declaration out of. */
+const PUBLIC_SURFACE_SRC = [
+  "export const PUBLIC_SUMMARY = 'data/public-summary.json';",
+  "export const PUBLIC_DIGEST_PREFIX = 'public-';",
+  '',
+].join('\n');
+
+/** `surface: null` builds a root with no `lib/public-surface.mjs` at all. */
+function rendererRoot(source, surface = PUBLIC_SURFACE_SRC) {
+  const files = { 'scripts/render-site.mjs': source };
+  if (surface !== null) files['lib/public-surface.mjs'] = surface;
+  return syntheticRoot(files);
+}
+
+test('a renderer that reads the projected summary and narrows the prefix passes', () => {
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(PUBLIC_RENDERER_SRC));
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+});
+
+test('a renderer reading the private summary is a violation, and the path is named', () => {
+  const src = PUBLIC_RENDERER_SRC.replace('readJson(PUBLIC_SUMMARY)', "readJson('data/summary.json')");
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(
+    result.violations.map((v) => v.rule).join('\n'),
+    /I16: the public renderer reads data\/summary\.json/,
+  );
+});
+
+test('a renderer reading the command log is a violation — its rows carry the author login', () => {
+  const src = `${PUBLIC_RENDERER_SRC}const rows = readRows('history/commands.jsonl');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.map((v) => v.rule).join('\n'), /history\/commands\.jsonl/);
+});
+
+test('enumerating digest/ while merely importing the prefix is a violation, not a narrowing', () => {
+  // The regression this pins: the prefix was searched for anywhere in the file,
+  // so `import { PUBLIC_DIGEST_PREFIX }` sitting above `readdirSync('digest')`
+  // read as a narrowed read. The private and public digests share a directory and
+  // a date, so that version publishes whichever sorts last — which is the public
+  // one only because 'p' > '2'.
+  const src = PUBLIC_RENDERER_SRC.replace(
+    "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+    "const files = fs.readdirSync('digest');",
+  );
+  assert.match(src, /PUBLIC_DIGEST_PREFIX/, 'the import is still present, which is the whole point');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.map((v) => v.rule).join('\n'), /enumerates digest\/ without narrowing/);
+});
+
+test('a renderer that names no public digest fails, so the check cannot pass vacuously', () => {
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot('const s = readJson(PUBLIC_SUMMARY);\n'));
+  assert.equal(result.ok, false, 'a file that never names the prefix is not reading the projected surface');
+  assert.match(result.violations.map((v) => v.rule).join('\n'), /cannot be reading the projected surface/);
+});
+
+test('re-pointing PUBLIC_SUMMARY at the private summary is caught in the source, not by import', () => {
+  // Assertion 3 has to read the *declaration*: an import would have been a
+  // tautology, and a branch a test can never make fire is not a check.
+  const surface = [
+    "export const PUBLIC_SUMMARY = 'data/summary.json';",
+    "export const PUBLIC_DIGEST_PREFIX = 'public-';",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(PUBLIC_RENDERER_SRC, surface));
+  assert.equal(result.ok, false);
+  assert.match(result.violations.map((v) => v.rule).join('\n'), /PUBLIC_SUMMARY names a private path/);
+});
+
+test('a surface that declares no summary path fails rather than passing unasserted', () => {
+  const partial = "export const PUBLIC_DIGEST_PREFIX = 'public-';\n";
+  for (const [label, surface] of [['a renamed constant', partial], ['a missing module', null]]) {
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(PUBLIC_RENDERER_SRC, surface));
+    assert.equal(result.ok, false, label);
+    assert.match(result.violations.map((v) => v.rule).join('\n'), /is not declared/, label);
+  }
+});
+
+test('a private path named in a comment is documentation, not a read', () => {
+  // This is the shape the check failed on when it was first written: the module
+  // header names both private paths it forbids, and a scan that did not strip
+  // comments reported the paragraph explaining the rule as a breach of it.
+  const src = [
+    '// `data/summary.json` is the private summary; `history/commands.jsonl` carries the login.',
+    "import fs from 'node:fs';",
+    "import { PUBLIC_DIGEST_PREFIX, PUBLIC_SUMMARY } from '../lib/public-surface.mjs';",
+    'const summary = readJson(PUBLIC_SUMMARY);',
+    "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+    '',
+  ].join('\n');
+  assert.equal(
+    checkPublicRendererReadsNoPrivatePath(rendererRoot(src)).ok,
+    true,
+    'a rule that fired on its own explanation could not be documented',
+  );
+});
+
+test('a repository with no public renderer fails rather than passing', () => {
+  const result = checkPublicRendererReadsNoPrivatePath(syntheticRoot({ 'README.md': 'x' }));
+  assert.equal(result.ok, false);
+  assert.match(result.violations[0].error, /missing/);
 });
 
 /* ---------------------------------------------------------- the real repo --- */

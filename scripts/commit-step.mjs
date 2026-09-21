@@ -10,10 +10,18 @@
  *   1. gate the narration against the payload          (fail closed)
  *   2. append decision records and events              (append-only)
  *   3. render the digest, the README region, the summary
+ *   3b. project the public surface — strictly after the gate, never before it
  *   4. always rewrite the heartbeat                    (the one exemption)
  *
  * If the gate fails, nothing is written except the heartbeat. The run fails
  * loudly, and the failure is visible in the log rather than in a bad commit.
+ *
+ * Step 3b's position is load-bearing in both directions. It must run after the
+ * gate, because the gate's document is the payload *with the decisions folded
+ * in* — the document the narrator read (I2) — and projecting first would hand
+ * the gate a narrower document than the narrator saw. And it must run here
+ * rather than in the renderer, because `pages.yml` downloads no artifact and so
+ * `render-site.mjs` never has a payload to project.
  */
 
 import fs from 'node:fs';
@@ -29,6 +37,7 @@ import {
 } from '../lib/store.mjs';
 import { assertGrounded } from '../lib/gate.mjs';
 import { probeRecordForCommit } from '../lib/probe.mjs';
+import { buildPublicSurface, publicDigestPath, PUBLIC_SUMMARY } from '../lib/public-surface.mjs';
 import {
   renderDigest,
   renderReadmeSection,
@@ -208,6 +217,40 @@ async function main() {
 
   writeIfChanged(SUMMARY, renderSummary({ payload, decisions, heartbeat }));
 
+  // ---- 3b. the public surface --------------------------------------------
+  // Strictly after the gate. The gate read `attachDecisions(payload, decisions)`
+  // above; this reads the same two documents and narrows them. Projecting before
+  // the gate would hand it a document the narrator never saw, and every fact
+  // about a withheld package would become ungroundable — I2's failure, mirrored.
+  //
+  // The marker lives in `data/stack.json`, which is committed, so the commit job
+  // reads it from the checkout. An invalid marker fails closed: the public
+  // surface is withheld and the private run is unaffected. A redaction control
+  // must never be able to fail the product it protects.
+  const stack = readJsonIfExists('data/stack.json');
+  const publicSurface = buildPublicSurface({ payload, decisions, stack, heartbeat, commands });
+  if (publicSurface.ok) {
+    console.log(
+      `public surface: ${publicSurface.summary.packages} package(s), ` +
+        `${publicSurface.summary.drop.dropped} record(s) withheld`,
+    );
+  } else {
+    // The entries are logged here and deliberately not written to the public
+    // surface: a violation names a policy entry, and a mistyped entry can be a
+    // private name.
+    for (const v of publicSurface.violations) {
+      console.warn(
+        `::warning::publication marker: ${v.list}${v.entry !== undefined ? ` entry ${JSON.stringify(v.entry)}` : ''} — ${v.error}`,
+      );
+    }
+    console.warn(
+      `::warning::${publicSurface.violations.length} marker violation(s) — the public surface is withheld, ` +
+        'the private run is unaffected',
+    );
+  }
+  writeIfChanged(publicDigestPath(observed), publicSurface.digest);
+  writeIfChanged(PUBLIC_SUMMARY, publicSurface.summary);
+
   // Projected, not copied. `data/endpoint.json` is committed and this repository
   // may be public, so what lands here is an allowlist rather than whatever the
   // probe returned — the same shape as the write allowlist (I3), and the half
@@ -223,7 +266,7 @@ async function main() {
   // Per-item hashes make the change gate explicit and auditable. It hashes the
   // state files, not itself, so a run that changed nothing leaves it identical.
   const hashes = {};
-  for (const rel of [SUMMARY, 'data/stack.json', 'data/endpoint.json', HEARTBEAT]) {
+  for (const rel of [SUMMARY, PUBLIC_SUMMARY, 'data/stack.json', 'data/endpoint.json', HEARTBEAT]) {
     if (fs.existsSync(rel)) hashes[rel] = sha256(fs.readFileSync(rel, 'utf8'));
   }
   writeIfChanged(HASHES, hashes);

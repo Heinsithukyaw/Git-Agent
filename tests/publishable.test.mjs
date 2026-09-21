@@ -35,9 +35,16 @@ import {
   readPolicy,
   validatePolicy,
   projectPublishable,
+  projectDecisions,
   dropRecord,
 } from '../lib/publishable.mjs';
 import { renderDigest, renderSummary } from '../lib/render.mjs';
+import {
+  buildPublicSurface,
+  publicDigestPath,
+  projectCommands,
+  PUBLIC_SUMMARY,
+} from '../lib/public-surface.mjs';
 
 const ROOT = process.cwd();
 const SCRIPT = path.join(ROOT, 'scripts/render-site.mjs');
@@ -99,6 +106,51 @@ function payload() {
       feeds: ['https://github.blog/changelog/feed/', PRIVATE_FEED],
     },
   };
+}
+
+/**
+ * Decision rows — the *second* document the renderer reads.
+ *
+ * `renderDigest` renders a table whose Package column is `decision.package`, so a
+ * projected payload with unprojected decisions still publishes a private name.
+ * A fixture with no decisions would make the canary green over exactly that
+ * defect, which is why one of these rows is for the sentinel.
+ */
+function decisions() {
+  return [
+    {
+      observed_at: '2026-09-21T06:12:00.000Z',
+      advisory_id: 'GHSA-aaaa-bbbb-cccc',
+      package: 'express',
+      ecosystem: 'npm',
+      pinned: '4.18.2',
+      upgrade: '4.20.0',
+      decision: 'act',
+      reason: 'affected, and we import express',
+      layer: 'rules',
+      severity: 5.3,
+    },
+    {
+      observed_at: '2026-09-21T06:12:00.000Z',
+      advisory_id: 'GHSA-dddd-eeee-ffff',
+      package: SENTINEL,
+      ecosystem: 'Go',
+      pinned: 'v0.4.1',
+      upgrade: 'v0.5.0',
+      decision: 'act',
+      reason: 'affected, and we import a private symbol',
+      layer: 'rules',
+      severity: 9.1,
+    },
+  ];
+}
+
+/** Command rows as `history/commands.jsonl` holds them — login included. */
+function commands() {
+  return [
+    { comment_id: 1, author: 'octocat', verb: 'why', arg: 'lodash', started_at: 't', outcome: 'answered' },
+    { comment_id: 2, author: 'someone-else', verb: 'pause', arg: null, started_at: 't', outcome: 'recorded' },
+  ];
 }
 
 /* -------------------------------------------------------------- reading --- */
@@ -299,6 +351,14 @@ test('dropping a package drops the advisory, release and feed rows that refer to
   assert.deepEqual(projected.feeds.map((f) => f.url), ['https://github.blog/changelog/feed/']);
 });
 
+test('a decision row for a private package is dropped with the package', () => {
+  // The route a payload-only projection misses. The decision set is a separate
+  // document, and `renderDigest` renders `decision.package` in its table.
+  assert.ok(decisions().some((d) => d.package === SENTINEL), 'the fixture has a private decision in it');
+  const projected = projectDecisions(decisions(), readPolicy(stack()));
+  assert.deepEqual(projected.map((d) => d.package), ['express']);
+});
+
 test('an error bound to no entity survives; one bound to a private entity does not', () => {
   const projected = projectPublishable(payload(), readPolicy(stack()));
   assert.deepEqual(
@@ -359,6 +419,85 @@ test('the drop record carries counts and kinds, never names', () => {
   assert.deepEqual(record.withheld, ['watch'], 'the watch list was dropped; its size is not reported');
 });
 
+/* ---------------------------------------------------- the public surface --- */
+
+const HEARTBEAT = { last_run_at: '2026-09-21T06:12:01.000Z', last_status: 'ok', consecutive_failures: 0 };
+
+/** Write the two artifacts the commit job produces into a sandbox tree. */
+function writeSurface(dir, { digest, summary }) {
+  fs.mkdirSync(path.join(dir, 'digest'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
+  fs.writeFileSync(path.join(dir, publicDigestPath(summary.observed_at)), digest, 'utf8');
+  fs.writeFileSync(path.join(dir, PUBLIC_SUMMARY), JSON.stringify(summary, null, 2) + '\n', 'utf8');
+}
+
+function runSite(dir) {
+  return spawnSync(process.execPath, [SCRIPT], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_REPOSITORY: 'owner/repo' },
+  });
+}
+
+test('an invalid marker withholds the public surface, and says which way it failed', () => {
+  // A missing key is not a deny-all. If the page rendered "withheld: all" for a
+  // typo it would be indistinguishable from a deliberate deny-all, and the
+  // operator would get no signal that the marker was never read.
+  const broken = stack();
+  delete broken.public_feeds;
+  const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: broken });
+
+  assert.equal(surface.ok, false);
+  assert.equal(surface.summary.packages, 0);
+  assert.equal(surface.summary.withheld_reason, 'invalid-marker');
+  assert.equal(surface.summary.drop.deny_all, false, 'a missing key is not a deny-all');
+  assert.ok(surface.summary.invalid_marker >= 1, 'the count of violations travels');
+
+  // The entries do not travel: a violation names a policy entry, and a mistyped
+  // entry can be a private name.
+  const published = JSON.stringify(surface.summary) + surface.digest;
+  assert.ok(!published.includes('public_feeds'));
+  for (const name of [SENTINEL, PRIVATE_UPSTREAM, PRIVATE_FEED]) {
+    assert.ok(!published.includes(name), `${name} must not reach the public surface`);
+  }
+});
+
+test('a valid deny-all publishes nothing, and is recorded as a deny-all', () => {
+  const s = stack({ public_packages: [], public_upstreams: [], public_feeds: [] });
+  const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: s });
+  assert.equal(surface.ok, true);
+  assert.equal(surface.summary.packages, 0);
+  assert.equal(surface.summary.drop.deny_all, true);
+  assert.equal(surface.summary.withheld_reason, undefined, 'a deny-all is not an invalid marker');
+});
+
+test('every published count is derived from the projected set, not the private one', () => {
+  // FM-c. `packages: 3` on a page showing two rows states the size of what was
+  // withheld, and the count is a fact about the private stack just as a name is.
+  const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: stack() });
+  assert.equal(surface.summary.packages, 2, 'three watched, two publishable');
+  assert.equal(surface.summary.advisories, 1, 'two advisories, one for a publishable package');
+});
+
+test('the public summary carries the verb and the argument, never the author login', () => {
+  // The rows carry a GitHub login and the summary is rendered onto a
+  // world-readable page. `lib/render.mjs:390-394` states the rule: "a login
+  // belongs to a person rather than to this repository."
+  const rows = commands();
+  assert.ok(JSON.stringify(rows).includes('octocat'), 'the fixture really carries a login');
+
+  const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: stack(), commands: rows });
+  assert.deepEqual(surface.summary.commands, [
+    { verb: 'why', arg: 'lodash', outcome: 'answered' },
+    { verb: 'pause', arg: null, outcome: 'recorded' },
+  ]);
+
+  const published = JSON.stringify(surface.summary) + surface.digest;
+  assert.ok(!published.includes('octocat'), 'the login must not reach the public surface');
+  assert.ok(!published.includes('someone-else'));
+  assert.ok(!published.includes('"author"'), 'and neither must the field itself');
+});
+
 /* ------------------------------------------------------------- the canary --- */
 
 /**
@@ -396,34 +535,22 @@ function mkdtemp() {
   return fs.mkdtempSync(path.join(os.tmpdir(), 'git-agent-canary-'));
 }
 
-/** Render `site/` from the payloads given, exactly as the site job would. */
-function render(dir, { digestPayload, summaryPayload }) {
-  fs.mkdirSync(path.join(dir, 'digest'), { recursive: true });
-  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
-  fs.writeFileSync(
-    path.join(dir, 'data/summary.json'),
-    JSON.stringify(renderSummary({ payload: summaryPayload, decisions: [], heartbeat: null }), null, 2) + '\n',
-    'utf8',
-  );
-  fs.writeFileSync(
-    path.join(dir, 'digest/2026-09-21.md'),
-    renderDigest({ payload: digestPayload, decisions: [] }),
-    'utf8',
-  );
-  return spawnSync(process.execPath, [SCRIPT], {
-    cwd: dir,
-    encoding: 'utf8',
-    env: { ...process.env, GITHUB_REPOSITORY: 'owner/repo' },
+test('publish canary: the shipped assembly keeps a private package out of every file under site/', () => {
+  // The shipped path, not a re-implementation of it: `buildPublicSurface` is
+  // what `commit-step` calls, so a defect in the assembly fails here. A canary
+  // that assembled the artifacts itself would test the canary.
+  const surface = buildPublicSurface({
+    payload: payload(),
+    decisions: decisions(),
+    stack: stack(),
+    heartbeat: HEARTBEAT,
+    commands: commands(),
   });
-}
-
-test('publish canary: a private package never reaches any file under site/', () => {
-  const s = stack();
-  const pl = payload();
-  const projected = projectPublishable(pl, readPolicy(s));
+  assert.equal(surface.ok, true, JSON.stringify(surface.violations));
 
   const dir = mkdtemp();
-  const result = render(dir, { digestPayload: projected, summaryPayload: projected });
+  writeSurface(dir, surface);
+  const result = runSite(dir);
   assert.equal(result.status, 0, result.stderr);
 
   const files = readSiteTree(dir);
@@ -431,6 +558,7 @@ test('publish canary: a private package never reaches any file under site/', () 
   for (const f of files) {
     assert.ok(!containsToken(f.text, SENTINEL), `${SENTINEL} leaked into ${f.rel}`);
     assert.ok(!containsToken(f.text, PRIVATE_UPSTREAM), `${PRIVATE_UPSTREAM} leaked into ${f.rel}`);
+    assert.ok(!f.text.includes('octocat'), `the author login leaked into ${f.rel}`);
   }
 
   // The positive control. Without it, a sweep whose matcher had stopped working
@@ -441,13 +569,34 @@ test('publish canary: a private package never reaches any file under site/', () 
   );
 });
 
-test('the canary is not vacuous: rendering the unprojected payload leaks the sentinel', () => {
-  // The must-fail twin. This is what makes the canary a check rather than a
-  // decoration: it demonstrates that the sweep detects the exact leak it exists
-  // to catch, when the projection is not applied.
+test('the canary is not vacuous: the unprojected documents leak the sentinel through the decisions route', () => {
+  // The must-fail twin, and the one that would have caught the hole in the first
+  // version of this canary: it passed `decisions: []`, so a projected payload
+  // with unprojected decisions would have published a private package name in
+  // the decision table while the sweep stayed green.
   const pl = payload();
+  const rawDigest = renderDigest({
+    payload: pl,
+    decisions: decisions(),
+    narration: null,
+    narrationStatus: null,
+    commands: projectCommands(commands()),
+  });
+  assert.ok(
+    containsToken(rawDigest, SENTINEL),
+    'the unprojected digest carries the private package through its decision table',
+  );
+
   const dir = mkdtemp();
-  const result = render(dir, { digestPayload: pl, summaryPayload: pl });
+  writeSurface(dir, {
+    digest: rawDigest,
+    summary: {
+      ...renderSummary({ payload: pl, decisions: decisions(), heartbeat: null }),
+      heartbeat: null,
+      commands: projectCommands(commands()),
+    },
+  });
+  const result = runSite(dir);
   assert.equal(result.status, 0, result.stderr);
 
   const files = readSiteTree(dir);
@@ -457,37 +606,34 @@ test('the canary is not vacuous: rendering the unprojected payload leaks the sen
   );
 });
 
-/* ------------------------------------------------------------- the repo --- */
-
-test('the published summary carries the verb and the argument, never the author login', () => {
-  // `scripts/render-site.mjs` writes `history/commands.jsonl` rows into a
-  // world-readable Pages artifact. The rows carry a GitHub login, and
-  // `lib/render.mjs:390-394` states the rule they break: "a login belongs to a
-  // person rather than to this repository." The login stays in
-  // `history/commands.jsonl`; it must not survive into `site/`.
+test('the canary mirror: render-site emits the projected summary and ignores the private one', () => {
+  // The other half of the boundary. The renderer has no payload to project
+  // against, so its safety is entirely "which files does it read" — and that is
+  // asserted statically by I16. This is the behavioural counterpart: a private
+  // summary sitting beside the public one must not reach the page.
+  const surface = buildPublicSurface({
+    payload: payload(),
+    decisions: decisions(),
+    stack: stack(),
+    heartbeat: HEARTBEAT,
+  });
   const dir = mkdtemp();
-  fs.mkdirSync(path.join(dir, 'history'), { recursive: true });
-  const rows = [
-    { comment_id: 1, author: 'octocat', verb: 'why', arg: 'lodash', started_at: 't', outcome: 'answered' },
-    { comment_id: 2, author: 'someone-else', verb: 'pause', arg: null, started_at: 't', outcome: 'recorded' },
-  ];
-  const raw = rows.map((r) => JSON.stringify(r)).join('\n') + '\n';
-  fs.writeFileSync(path.join(dir, 'history/commands.jsonl'), raw, 'utf8');
-  assert.ok(raw.includes('octocat'), 'the fixture really carries a login, or its absence proves nothing');
+  writeSurface(dir, surface);
+  fs.writeFileSync(
+    path.join(dir, 'data/summary.json'),
+    JSON.stringify({ packages: 99, private_sentinel: SENTINEL }, null, 2) + '\n',
+    'utf8',
+  );
 
-  const projected = projectPublishable(payload(), readPolicy(stack()));
-  const result = render(dir, { digestPayload: projected, summaryPayload: projected });
+  const result = runSite(dir);
   assert.equal(result.status, 0, result.stderr);
 
-  const summary = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8'));
-  assert.deepEqual(summary.commands, [
-    { verb: 'why', arg: 'lodash', outcome: 'answered' },
-    { verb: 'pause', arg: null, outcome: 'recorded' },
-  ]);
-  const serialised = JSON.stringify(summary);
-  assert.ok(!serialised.includes('octocat'), 'the login must not reach the published summary');
-  assert.ok(!serialised.includes('someone-else'));
-  assert.ok(!serialised.includes('"author"'), 'and neither must the field itself');
+  const files = readSiteTree(dir);
+  for (const f of files) {
+    assert.ok(!containsToken(f.text, SENTINEL), `the private summary leaked into ${f.rel}`);
+  }
+  const published = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8'));
+  assert.equal(published.packages, 2, 'the page got the projected count, not the private one');
 });
 
 test('the shipped data/stack.json carries a valid marker that names the seed stack', () => {

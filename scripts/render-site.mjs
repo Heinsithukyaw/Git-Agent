@@ -16,12 +16,21 @@
  *   - **`chat.html` composes, it does not call.** It builds a prefilled issue
  *     URL; the user's own GitHub session submits it. No token is ever in the
  *     browser, and no endpoint is contacted.
+ *   - **It reads only the projected artifacts.** `data/public-summary.json` and
+ *     `digest/public-*.md` are written by the commit job, the only component
+ *     that holds the payload. This step never sees a payload, so it *cannot*
+ *     project — `pages.yml` checks out committed files and downloads no
+ *     artifact. It must not try: `data/summary.json` is the private summary and
+ *     `history/commands.jsonl` carries the author login, and reading either here
+ *     would put the private document on a world-readable page. The narrowing is
+ *     asserted, not promised — see I16.
  */
 
 import fs from 'node:fs';
 import path from 'node:path';
 import { markdownToHtml } from '../lib/render.mjs';
-import { readRows, writeIfChanged, CI_ALLOWLIST } from '../lib/store.mjs';
+import { writeIfChanged, CI_ALLOWLIST } from '../lib/store.mjs';
+import { PUBLIC_DIGEST_PREFIX, PUBLIC_SUMMARY } from '../lib/public-surface.mjs';
 
 const SITE = 'site';
 const SITE_DATA = path.join(SITE, 'data');
@@ -35,13 +44,25 @@ function readJson(rel, fallback = null) {
   }
 }
 
-/** The most recent dated digest, by filename. */
+/**
+ * The most recent **public** digest, by filename.
+ *
+ * Narrowed to `public-` explicitly rather than by taking the last `.md`. The
+ * private and public digests are written on the same date into the same
+ * directory, so "the last file" picked the public one only because `'p' > '2'` —
+ * a property of the filename sort, not a decision anyone made. I16 asserts the
+ * narrowing survives.
+ */
 function latestDigest() {
   if (!fs.existsSync('digest')) return null;
-  const files = fs.readdirSync('digest').filter((f) => f.endsWith('.md')).sort();
+  const files = fs
+    .readdirSync('digest')
+    .filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX) && f.endsWith('.md'))
+    .sort();
   if (!files.length) return null;
   const name = files[files.length - 1];
-  return { name, date: name.replace(/\.md$/, ''), markdown: fs.readFileSync(path.join('digest', name), 'utf8') };
+  const date = name.slice(PUBLIC_DIGEST_PREFIX.length).replace(/\.md$/, '');
+  return { name, date, markdown: fs.readFileSync(path.join('digest', name), 'utf8') };
 }
 
 function repoSlug() {
@@ -259,8 +280,11 @@ lands as a comment in the thread.</p>
 /* ------------------------------------------------------------------ main --- */
 
 function main() {
-  const summary = readJson('data/summary.json');
-  const heartbeat = readJson('data/heartbeat.json');
+  // The projected summary, and only that. See the module header: this step has
+  // no payload and no policy, so it publishes what the commit job decided may be
+  // published rather than deciding for itself.
+  const summary = readJson(PUBLIC_SUMMARY);
+  const heartbeat = summary?.heartbeat ?? null;
   const digest = latestDigest();
   const slug = repoSlug();
 
@@ -287,19 +311,14 @@ function main() {
     },
   );
 
+  // `summary` arrives already projected: every count derived from the publishable
+  // set, the commands reduced to `{ verb, arg, outcome }`, and the drop record
+  // attached. Nothing here filters, and nothing here may — there is no payload to
+  // filter against, and a second filter is a second rule that can disagree with
+  // the first.
   write(path.join(SITE_DATA, 'summary.json'), {
     ...(summary ?? {}),
     heartbeat: heartbeat ?? null,
-    // The verb and the argument, never the author. `history/commands.jsonl` rows
-    // carry a GitHub login, and this file is written to a world-readable Pages
-    // artifact: publishing them raw puts a person's name on the public page.
-    // `lib/render.mjs:390-394` states the rule — "a login belongs to a person
-    // rather than to this repository" — and the login stays in
-    // `history/commands.jsonl`, which is the audit trail and the one place the
-    // question "who asked for this?" has to stay answerable.
-    commands: readRows('history/commands.jsonl')
-      .slice(-10)
-      .map(({ verb, arg, outcome }) => ({ verb, arg, outcome })),
   });
 
   write(path.join(SITE, '.nojekyll'), '');
