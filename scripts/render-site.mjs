@@ -9,10 +9,20 @@
  *
  * Two structural choices worth stating:
  *
- *   - **Generated content lives in `site/data/*.json`, not inside the HTML.**
+ *   - **Generated content lives in `site/api/*.json`, not inside the HTML.**
  *     Advisory summaries and feed titles are upstream text; keeping them out of
  *     the page source means a scanner over `site/*.html` stays meaningful, and
  *     the page itself is stable between runs.
+ *
+ *     The directory is `api/` and not `data/` because of I16. The private
+ *     collector root is `data/`, and a literal that *resolves into a collector
+ *     root* is what I16 treats as a read target. A page writing `site/data/…`
+ *     therefore puts a `data/` literal in this file that resolves into a private
+ *     root — indistinguishable, to a resolution test, from reading the watch
+ *     list. The alternative was an exception list, and excepting `data` would
+ *     have let `fs.readdirSync('data')` pass: an exception meant to remove a
+ *     false positive would have opened the leak the check exists to close. The
+ *     rename costs one directory name and needs no exception.
  *   - **`chat.html` composes, it does not call.** It builds a prefilled issue
  *     URL; the user's own GitHub session submits it. No token is ever in the
  *     browser, and no endpoint is contacted.
@@ -33,14 +43,27 @@ import { writeIfChanged, CI_ALLOWLIST } from '../lib/store.mjs';
 import { PUBLIC_DIGEST_PREFIX, PUBLIC_SUMMARY } from '../lib/public-surface.mjs';
 
 const SITE = 'site';
-const SITE_DATA = path.join(SITE, 'data');
+const SITE_DATA = path.join(SITE, 'api');
 
-function readJson(rel, fallback = null) {
+/**
+ * The projected summary, and nothing else.
+ *
+ * This was `readJson(rel, fallback)` — a general reader taking a path. It is
+ * specialised deliberately, and the reason is I16 rather than taste: a helper
+ * whose argument is a path has a *variable* root inside it, so a check over read
+ * targets can see the call but not what it reads, and the only way to keep the
+ * helper would be to exempt it. Exempting the helper exempts every call through
+ * it, which is the same as exempting the file. A single-purpose reader has a
+ * literal root — the declared constant — and is checkable.
+ *
+ * There is nothing to generalise away either: this step reads exactly one JSON
+ * file, and the absence of a fallback argument is the point rather than a loss.
+ */
+function readPublicSummary() {
   try {
-    if (!fs.existsSync(rel)) return fallback;
-    return JSON.parse(fs.readFileSync(rel, 'utf8'));
+    return JSON.parse(fs.readFileSync(PUBLIC_SUMMARY, 'utf8'));
   } catch {
-    return fallback;
+    return null;
   }
 }
 
@@ -179,11 +202,11 @@ ${live}
   </noscript>
 </main>
 <script>
-  // Reads files this job wrote into site/data/. Nothing else is contacted.
+  // Reads files this job wrote into site/api/. Nothing else is contacted.
   (async () => {
     const main = document.getElementById('digest');
     try {
-      const res = await fetch('./data/digest.json', { cache: 'no-store' });
+      const res = await fetch('./api/digest.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(String(res.status));
       const doc = await res.json();
       main.innerHTML = doc.html || '<p>No digest has been published yet.</p>';
@@ -283,7 +306,7 @@ function main() {
   // The projected summary, and only that. See the module header: this step has
   // no payload and no policy, so it publishes what the commit job decided may be
   // published rather than deciding for itself.
-  const summary = readJson(PUBLIC_SUMMARY);
+  const summary = readPublicSummary();
   const heartbeat = summary?.heartbeat ?? null;
   const digest = latestDigest();
   const slug = repoSlug();
@@ -312,10 +335,11 @@ function main() {
   );
 
   // `summary` arrives already projected: every count derived from the publishable
-  // set, the commands reduced to `{ verb, arg, outcome }`, and the drop record
-  // attached. Nothing here filters, and nothing here may — there is no payload to
-  // filter against, and a second filter is a second rule that can disagree with
-  // the first.
+  // set and the commands reduced to `{ verb, arg, outcome }`. The drop record is
+  // deliberately *not* here — it is a cardinality of the private stack and lives
+  // in the private summary, which this step must never read. Nothing here
+  // filters, and nothing here may: there is no payload to filter against, and a
+  // second filter is a second rule that can disagree with the first.
   write(path.join(SITE_DATA, 'summary.json'), {
     ...(summary ?? {}),
     heartbeat: heartbeat ?? null,

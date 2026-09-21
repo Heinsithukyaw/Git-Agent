@@ -32,7 +32,7 @@ import {
   checkPublicRendererReadsNoPrivatePath,
   runAll,
 } from '../lib/invariants.mjs';
-import { CI_ALLOWLIST } from '../lib/store.mjs';
+import { CI_ALLOWLIST, COLLECTOR_ALLOWLIST } from '../lib/store.mjs';
 
 const ROOT = process.cwd();
 
@@ -1128,11 +1128,15 @@ test('a read target bound to a const is still a read target', () => {
 });
 
 test('a read target assembled by a two-literal path.join is still a read target', () => {
-  // The second hiding spelling, and the idiomatic one in this repository.
+  // The second hiding spelling, and the idiomatic one in this repository. The
+  // check reports the literal that *resolves into a collector root* — `data` —
+  // rather than a path synthesised from the two components. That is the inversion
+  // showing through: detection is by content, so what is named is the literal
+  // that was found, not a shape that was reconstructed.
   const src = `${PUBLIC_RENDERER_SRC}const watchList = readJson(path.join('data', 'stack.json'));\n`;
   const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
   assert.equal(result.ok, false);
-  assert.ok(result.violations.some((v) => v.target === 'data/stack.json'), rulesOf(result));
+  assert.ok(result.violations.some((v) => v.target === 'data'), rulesOf(result));
 });
 
 test('enumerating digest/ while merely importing the prefix is a violation, not a narrowing', () => {
@@ -1242,6 +1246,200 @@ test('a repository with no public renderer fails rather than passing', () => {
   const result = checkPublicRendererReadsNoPrivatePath(syntheticRoot({ 'README.md': 'x' }));
   assert.equal(result.ok, false);
   assert.match(result.violations[0].error, /missing/);
+});
+
+/* ------------------------------- I16 v2: detection by content, not shape --- */
+
+/**
+ * The second half of the inversion, and the half the first version missed.
+ *
+ * `400626e` made the *policy* an allowlist but left the *detection* shape-based:
+ * eight read-function names, three spellings of a target. A shape list fails open
+ * for the same reason a denylist does — it enumerates the thing it is trying to
+ * cover. So the check now scans **literals**: any string that resolves into a
+ * collector root is a private path, whatever it is passed to.
+ *
+ * These cases are the ones the shape list could not see. Each is a way to spell a
+ * read of `data/stack.json` that the previous version returned `{ok: true}` on.
+ */
+
+test('the content scan is not the function list: an unenumerated reader is caught', () => {
+  // `createReadStream` is in no function list. A shape-based check cannot see
+  // this at all; a content-based one sees the literal, which is the point.
+  const src = `${PUBLIC_RENDERER_SRC}const stream = fs.createReadStream('data/stack.json');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false, 'the function is not the boundary; the path is');
+  assert.ok(result.violations.some((v) => v.target === 'data/stack.json'), rulesOf(result));
+});
+
+test('a dynamic import of a private path is caught too', () => {
+  const src = `${PUBLIC_RENDERER_SRC}const watch = await import('data/stack.json');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.some((v) => v.target === 'data/stack.json'), rulesOf(result));
+});
+
+test('./ and // are the same path spelled differently, and both are caught', () => {
+  for (const spelling of ['./data/stack.json', 'data//stack.json', 'data/stack.json']) {
+    const src = `${PUBLIC_RENDERER_SRC}const w = readJson('${spelling}');\n`;
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+    assert.equal(result.ok, false, spelling);
+  }
+});
+
+test('the collector root itself is a private path, not only a file under it', () => {
+  // `fs.readdirSync('data')` names no file and leaks every one of them.
+  const src = `${PUBLIC_RENDERER_SRC}const entries = fs.readdirSync('data');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.some((v) => v.target === 'data'), rulesOf(result));
+});
+
+test('a sibling of a collector root is not a private path', () => {
+  // The resolution test must be a *segment* test. A prefix test would report
+  // `database.json` and `datastore/`, and a check that cries wolf gets disabled.
+  //
+  // These are not read targets, which is deliberate: a *read* of a non-projected
+  // path is refused by the allowlist policy whatever it names, so `readJson(
+  // 'database.json')` is red and rightly so. What is being asserted here is only
+  // that the resolution predicate does not mistake a sibling for a root.
+  const src = [
+    PUBLIC_RENDERER_SRC,
+    "const a = 'database.json';",
+    "const b = 'datastore/index.json';",
+    "const c = 'history.md';",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+});
+
+test('legitimate literals are not paths, and stay green', () => {
+  // The false positives that would make this check noisy: HTML, MIME types, and a
+  // path-shaped URL fragment. The charset guard rejects the first and the
+  // resolution test rejects the other two.
+  const src = [
+    PUBLIC_RENDERER_SRC,
+    "const tag = '</div>';",
+    "const mime = 'text/html';",
+    "const json = 'application/json';",
+    "const issue = 'https://github.com/' + REPO + '/issues/new';",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, true, JSON.stringify(result.violations));
+});
+
+test('a computed target to a known reader is refused, because no literal resolves', () => {
+  // Rule 2's own reach: `A + '/' + B` contains no single literal that resolves, so
+  // assertion 1 cannot see it. The form clause can.
+  const src = [
+    PUBLIC_RENDERER_SRC,
+    "const A = 'da';",
+    "const B = 'ta/stack.json';",
+    "const w = readJson(A + '/' + B);",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /computed target/);
+});
+
+test('an identifier that is not the declared constant is refused', () => {
+  // The literal does not resolve, so assertion 1 is silent — this is the case
+  // that makes rule 2 more than a restatement of assertion 1.
+  const src = [
+    PUBLIC_RENDERER_SRC,
+    "const STACK = 'config/stack.json';",
+    'const w = readJson(STACK);',
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /which is not the declared PUBLIC_SUMMARY/);
+});
+
+test('a join with a projected literal root is permitted, and one level of const folds', () => {
+  // Both are the shape the real renderer uses for `digest/`.
+  for (const src of [
+    `${PUBLIC_RENDERER_SRC}const doc = fs.readFileSync(path.join('digest', name), 'utf8');\n`,
+    `${PUBLIC_RENDERER_SRC}const DIGEST = 'digest';\nconst doc = fs.readFileSync(path.join(DIGEST, name), 'utf8');\n`,
+  ]) {
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+    assert.equal(result.ok, true, JSON.stringify(result.violations));
+  }
+});
+
+test('a join root that cannot be resolved is refused', () => {
+  // The fold is one level, the way I15 folds one level. `path.join(SOME_DIR, …)`
+  // names nothing this check can resolve, so it is refused rather than assumed.
+  const src = `${PUBLIC_RENDERER_SRC}const w = readJson(path.join(SOME_DIR, 'stack.json'));\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /whose root is not a literal and cannot be resolved/);
+});
+
+test('a .. traversal is refused by the form clause, since the content clause excludes it', () => {
+  // `..` is excluded from the candidate test so that no false positive can come
+  // from a relative import, which means assertion 1 does not report this. It is a
+  // read target all the same, and the form clause is what catches it — otherwise
+  // it would slip through both clauses, which is the failure this whole task is
+  // about.
+  const src = `${PUBLIC_RENDERER_SRC}const w = readJson('data/../data/stack.json');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /is not a projected artifact/);
+});
+
+test('the stated limit, asserted rather than left silent: an unenumerated reader with a computed target passes', () => {
+  // Rule 2 closes *enumerated function + computed target*. It does not close
+  // *unenumerated function + computed target*: there is no name to recognise and
+  // no literal to resolve, so neither clause fires. This is a real gap, it is the
+  // reason the pipeline canary exists, and it is pinned here so that closing it
+  // later is a deliberate act rather than an accident.
+  const src = [
+    PUBLIC_RENDERER_SRC,
+    "const A = 'da';",
+    "const B = 'ta/stack.json';",
+    "const stream = fs.createReadStream(A + '/' + B);",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, true, 'the documented limit, not an oversight');
+});
+
+test('the same limit, one spelling over: a .. literal to an unenumerated reader passes', () => {
+  const src = `${PUBLIC_RENDERER_SRC}const stream = fs.createReadStream('data/../data/stack.json');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, true, 'the documented limit, not an oversight');
+});
+
+test('a literal that is the collector allowlist file is a collector path too', () => {
+  // `README.md` is in `COLLECTOR_ALLOWLIST` as a single file rather than a
+  // directory, so `s === root` is what matches it. It is committed and public, so
+  // this is not a disclosure — it is the invariant's policy, which is that the
+  // renderer reads the projected artifacts and nothing else. Asserted so the
+  // behaviour is chosen rather than discovered.
+  const src = `${PUBLIC_RENDERER_SRC}const readme = fs.readFileSync('README.md', 'utf8');\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.ok(result.violations.some((v) => v.target === 'README.md'), rulesOf(result));
+});
+
+test('the collector roots are derived from the write allowlist, not restated', () => {
+  // The inversion's whole claim: the private set and the checked set are the same
+  // set. A root that is added to the write allowlist becomes a read target here
+  // with no edit to the check — which is the property a denylist cannot have.
+  // Asserted by the effect: every entry of the allowlist resolves, and a name
+  // that is not an entry does not.
+  const members = [...COLLECTOR_ALLOWLIST];
+  assert.ok(members.includes('data') && members.includes('assets'), 'the allowlist is the source');
+  const src = `${PUBLIC_RENDERER_SRC}const w = readJson('assets/logo.png');\n`;
+  assert.equal(
+    checkPublicRendererReadsNoPrivatePath(rendererRoot(src)).ok,
+    false,
+    'a root with no file named under it anywhere in the check is still caught',
+  );
 });
 
 /* ---------------------------------------------------------- the real repo --- */

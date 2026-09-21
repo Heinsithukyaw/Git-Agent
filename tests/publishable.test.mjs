@@ -769,7 +769,7 @@ test('the canary mirror: render-site emits the projected summary and ignores the
   for (const f of files) {
     assert.ok(!containsToken(f.text, SENTINEL), `the private summary leaked into ${f.rel}`);
   }
-  const published = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8'));
+  const published = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/summary.json'), 'utf8'));
   assert.equal(published.packages, 2, 'the page got the projected count, not the private one');
 });
 

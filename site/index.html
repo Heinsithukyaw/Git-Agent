@@ -82,11 +82,11 @@
   </noscript>
 </main>
 <script>
-  // Reads files this job wrote into site/data/. Nothing else is contacted.
+  // Reads files this job wrote into site/api/. Nothing else is contacted.
   (async () => {
     const main = document.getElementById('digest');
     try {
-      const res = await fetch('./data/digest.json', { cache: 'no-store' });
+      const res = await fetch('./api/digest.json', { cache: 'no-store' });
       if (!res.ok) throw new Error(String(res.status));
       const doc = await res.json();
       main.innerHTML = doc.html || '<p>No digest has been published yet.</p>';

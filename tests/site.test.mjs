@@ -197,7 +197,7 @@ test('the published page carries exactly one H1, and it is the page header', () 
   const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
   assert.equal(h1Count(index), 1, 'the shell header is the only H1 on the page');
 
-  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/digest.json'), 'utf8'));
   assert.equal(h1Count(doc.html), 0, 'the embedded document contributes no H1');
   assert.match(doc.html, /<h2>Act on these<\/h2>/, 'the template sections still render');
   assert.doesNotMatch(doc.html, /Dependency digest — observed/, 'the restated title is gone from the page');
@@ -210,7 +210,7 @@ test('the page renders the public digest, not the private one beside it', () => 
   const result = run(dir);
   assert.equal(result.status, 0, result.stderr);
 
-  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/digest.json'), 'utf8'));
   assert.equal(doc.date, DATE);
   assert.doesNotMatch(doc.html, new RegExp(NARRATION_ONLY), 'the public digest carries no narration');
   assert.doesNotMatch(doc.markdown, new RegExp(NARRATION_ONLY));
@@ -232,7 +232,7 @@ test('the private summary never reaches the page', () => {
     assert.ok(!f.text.includes('internal/payments-service'), `the private summary leaked into ${f.rel}`);
   }
   // The projected summary is what the page got.
-  const published = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8'));
+  const published = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/summary.json'), 'utf8'));
   assert.equal(published.packages, 1);
   assert.deepEqual(published.commands, [{ verb: 'why', arg: 'lodash', outcome: 'answered' }]);
 });
@@ -248,7 +248,7 @@ test('the committed markdown keeps its title, so the digest reads correctly on i
 
   // The raw markdown travels to the page too, for consumers that want it. It is
   // not what gets rendered, so the title stays in it.
-  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/digest.json'), 'utf8'));
   assert.equal(doc.markdown, onDisk);
 });
 
@@ -261,7 +261,7 @@ test('a private digest with no public one publishes no digest, rather than the p
   const result = run(dir);
   assert.equal(result.status, 0, result.stderr);
 
-  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/digest.json'), 'utf8'));
   assert.equal(doc.html, null, 'no public digest means no digest, not the private one');
   assert.equal(doc.markdown, null);
   assert.equal(h1Count(fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8')), 1);
@@ -276,7 +276,7 @@ test('the page renders with nothing published yet, rather than failing', () => {
   const result = run(dir);
   assert.equal(result.status, 0, result.stderr);
 
-  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
+  const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/api/digest.json'), 'utf8'));
   assert.equal(doc.html, null);
   assert.equal(h1Count(fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8')), 1);
 });
@@ -294,7 +294,7 @@ test('the page never prints a failure streak, or a cardinality of the private st
   assert.match(index, /Last run/, 'the liveness line renders, so the absence below is not an empty page');
   assert.doesNotMatch(index, /consecutive failure/);
 
-  const published = fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8');
+  const published = fs.readFileSync(path.join(dir, 'site/api/summary.json'), 'utf8');
   for (const field of ['consecutive_failures', 'last_success_at', 'drop', 'dropped']) {
     assert.ok(!published.includes(`"${field}"`), `the page must not carry ${field}`);
   }
