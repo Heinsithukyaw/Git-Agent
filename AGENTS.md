@@ -743,6 +743,16 @@ node scripts/fetch-step.mjs  # dry run; writes .run/payload.json, no commit
 `fetch` and `narrate` are read-only and safe to run locally. `commit` writes —
 run it only in CI unless you know why you are running it.
 
+**`npm test` also parses every module under `scripts/`, `lib/` and `tools/`, without
+running it.** That is not ceremony. Both pages are built inside a single template
+literal in `scripts/render-site.mjs` — stylesheet included — so **a backtick anywhere
+inside it, even in a CSS comment, closes the string** and the file stops parsing. The
+error then names the word *after* the backtick rather than the comment that caused it
+(`SyntaxError: Unexpected identifier 'body'`), and three of the eleven scripts are not
+reached by any other test, so a broken one can otherwise pass the whole suite and reach
+CI intact. Write straight quotes inside that template. `tests/syntax.test.mjs` carries
+a synthetic case in exactly that shape, so the check is known to be able to fail.
+
 **What a local run cannot prove.** Running the steps in sequence leaves them all
 in one `.run/` directory, which is exactly what GitHub replaces with an explicit
 artifact handoff between jobs. So a sequential local run proves the code, not the
