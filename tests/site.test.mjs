@@ -118,19 +118,29 @@ function sandbox() {
   // The private summary. A sentinel is placed in it on purpose: if the renderer
   // ever reads this file, the sentinel reaches the page and the sweep below says
   // so. In production this file holds counts derived from the *unprojected* set,
-  // which is a disclosure of its own — see `lib/public-surface.mjs`.
+  // which is a disclosure of its own — see `lib/public-surface.mjs` — and since
+  // the drop record moved off the public surface, it is here too.
   fs.writeFileSync(
     path.join(dir, 'data/summary.json'),
     JSON.stringify(
-      { observed_at: PAYLOAD.observed_at, advisories: 1, actionable: 1, private_sentinel: 'internal/payments-service' },
+      {
+        observed_at: PAYLOAD.observed_at,
+        advisories: 1,
+        actionable: 1,
+        private_sentinel: 'internal/payments-service',
+        drop: { deny_all: false, dropped: 3, counts: { packages: 3 }, kinds: ['packages'], withheld: ['watch'] },
+      },
       null,
       2,
     ) + '\n',
     'utf8',
   );
 
-  // The projected summary: counts derived from the publishable set, the heartbeat,
-  // and the commands already reduced to `{ verb, arg, outcome }`.
+  // The projected summary, in the shape the commit job writes: counts from the
+  // publishable set, the **reduced** heartbeat, and no drop record. The heartbeat
+  // is `{ last_run_at, last_status }` — `consecutive_failures` and
+  // `last_success_at` are facts about the private run, and the drop record is a
+  // cardinality of the private stack. Both stay in `data/summary.json` above.
   fs.writeFileSync(
     path.join(dir, 'data/public-summary.json'),
     JSON.stringify(
@@ -144,9 +154,8 @@ function sandbox() {
         sources_failed: 0,
         last_run_at: '2026-09-20T19:29:46.000Z',
         last_status: 'ok',
-        heartbeat: { last_run_at: '2026-09-20T19:29:46.000Z', last_status: 'ok', consecutive_failures: 0 },
+        heartbeat: { last_run_at: '2026-09-20T19:29:46.000Z', last_status: 'ok' },
         commands: [{ verb: 'why', arg: 'lodash', outcome: 'answered' }],
-        drop: { deny_all: false, dropped: 1, counts: { packages: 1 }, kinds: ['packages'], withheld: ['watch'] },
       },
       null,
       2,
@@ -270,4 +279,38 @@ test('the page renders with nothing published yet, rather than failing', () => {
   const doc = JSON.parse(fs.readFileSync(path.join(dir, 'site/data/digest.json'), 'utf8'));
   assert.equal(doc.html, null);
   assert.equal(h1Count(fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8')), 1);
+});
+
+test('the page never prints a failure streak, or a cardinality of the private stack', () => {
+  // The third heartbeat placement: the template prints
+  // `heartbeat.consecutive_failures` whenever it is truthy, so the fix is that the
+  // field is not on the public object at all. Confirmed in the rendered bytes
+  // rather than by reasoning about the ternary.
+  const dir = sandbox();
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+
+  const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
+  assert.match(index, /Last run/, 'the liveness line renders, so the absence below is not an empty page');
+  assert.doesNotMatch(index, /consecutive failure/);
+
+  const published = fs.readFileSync(path.join(dir, 'site/data/summary.json'), 'utf8');
+  for (const field of ['consecutive_failures', 'last_success_at', 'drop', 'dropped']) {
+    assert.ok(!published.includes(`"${field}"`), `the page must not carry ${field}`);
+  }
+});
+
+test('the streak sweep can fail — a private heartbeat shape in the public summary prints the phrase', () => {
+  // The must-fail twin. Without it, the assertion above would pass just as well
+  // on a template that had stopped rendering the liveness line entirely.
+  const dir = sandbox();
+  const summaryPath = path.join(dir, 'data/public-summary.json');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  summary.heartbeat = { ...summary.heartbeat, consecutive_failures: 3 };
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+  const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
+  assert.match(index, /3 consecutive failure/, 'the sweep must be able to see the phrase it forbids');
 });

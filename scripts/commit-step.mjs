@@ -9,8 +9,9 @@
  * Order matters:
  *   1. gate the narration against the payload          (fail closed)
  *   2. append decision records and events              (append-only)
- *   3. render the digest, the README region, the summary
- *   3b. project the public surface — strictly after the gate, never before it
+ *   3. render the digest and the README region
+ *   3b. project the public surface — strictly after the gate, never before it —
+ *       and write the private summary, which now carries the drop record
  *   4. always rewrite the heartbeat                    (the one exemption)
  *
  * If the gate fails, nothing is written except the heartbeat. The run fails
@@ -215,8 +216,6 @@ async function main() {
   const section = renderReadmeSection({ payload, decisions, heartbeat });
   writeIfChanged(README, replaceBetweenMarkers(readmeBefore, section));
 
-  writeIfChanged(SUMMARY, renderSummary({ payload, decisions, heartbeat }));
-
   // ---- 3b. the public surface --------------------------------------------
   // Strictly after the gate. The gate read `attachDecisions(payload, decisions)`
   // above; this reads the same two documents and narrows them. Projecting before
@@ -232,7 +231,7 @@ async function main() {
   if (publicSurface.ok) {
     console.log(
       `public surface: ${publicSurface.summary.packages} package(s), ` +
-        `${publicSurface.summary.drop.dropped} record(s) withheld`,
+        `${publicSurface.drop.dropped} record(s) withheld`,
     );
   } else {
     // The entries are logged here and deliberately not written to the public
@@ -248,6 +247,18 @@ async function main() {
         'the private run is unaffected',
     );
   }
+
+  // The private summary, and the drop record with it.
+  //
+  // The record used to ride on the public surface, which was wrong: `dropped` and
+  // the per-kind counts are cardinalities of the watch list, so `dropped: 4`
+  // beside a page showing two rows states how many were withheld. It belongs on
+  // the private side, where `data/summary.json` is committed and never published
+  // — I16 is the check that keeps the renderer away from it. The private
+  // heartbeat is written here in full, streak and all; the public one is reduced
+  // inside `buildPublicSurface`.
+  writeIfChanged(SUMMARY, { ...renderSummary({ payload, decisions, heartbeat }), drop: publicSurface.drop });
+
   writeIfChanged(publicDigestPath(observed), publicSurface.digest);
   writeIfChanged(PUBLIC_SUMMARY, publicSurface.summary);
 

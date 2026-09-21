@@ -43,6 +43,7 @@ import { renderDigest, renderSummary } from '../lib/render.mjs';
 import {
   buildPublicSurface,
   publicDigestPath,
+  publicHeartbeat,
   projectCommands,
   PUBLIC_SUMMARY,
 } from '../lib/public-surface.mjs';
@@ -466,8 +467,14 @@ test('an invalid marker withholds the public surface, and says which way it fail
   assert.equal(surface.ok, false);
   assert.equal(surface.summary.packages, 0);
   assert.equal(surface.summary.withheld_reason, 'invalid-marker');
-  assert.equal(surface.summary.drop.deny_all, false, 'a missing key is not a deny-all');
   assert.ok(surface.summary.invalid_marker >= 1, 'the count of violations travels');
+
+  // The drop record is private, and on this path it was the largest leak in the
+  // module: `dropRecord(payload, emptyPayload(...), policy)` has an empty `after`,
+  // so `before - after` is the *entire* private cardinality. A broken marker
+  // published the exact size of the watch list it had just failed to redact.
+  assert.equal(surface.summary.drop, undefined, 'no drop record on the public surface');
+  assert.equal(surface.drop.dropped, 14, 'and the record is still the whole cardinality, on the private side');
 
   // The entries do not travel: a violation names a policy entry, and a mistyped
   // entry can be a private name.
@@ -478,13 +485,91 @@ test('an invalid marker withholds the public surface, and says which way it fail
   }
 });
 
+test('the public surface carries no cardinality of the private stack', () => {
+  // The criterion for a public field is invariance under the unprojected payload.
+  // `dropped: 4` beside a page showing two rows states how many were withheld,
+  // and the per-kind breakdown states which — a count of the watch list by
+  // another name. The record is still produced; it is written to the private
+  // summary by the commit job.
+  const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: stack() });
+  const published = JSON.stringify(surface.summary);
+  for (const field of ['drop', 'dropped', 'counts', 'kinds', 'deny_all', 'withheld']) {
+    assert.ok(!published.includes(`"${field}"`), `the public summary must not carry ${field}`);
+  }
+
+  assert.deepEqual(
+    surface.drop.counts,
+    { packages: 1, advisories: 1, releases: 1, feeds: 1, errors: 3 },
+    'the record is unchanged, and it is the private copy that carries it',
+  );
+});
+
 test('a valid deny-all publishes nothing, and is recorded as a deny-all', () => {
   const s = stack({ public_packages: [], public_upstreams: [], public_feeds: [] });
   const surface = buildPublicSurface({ payload: payload(), decisions: decisions(), stack: s });
   assert.equal(surface.ok, true);
   assert.equal(surface.summary.packages, 0);
-  assert.equal(surface.summary.drop.deny_all, true);
+  assert.equal(surface.drop.deny_all, true);
   assert.equal(surface.summary.withheld_reason, undefined, 'a deny-all is not an invalid marker');
+  // A failure is loud; a choice is silent. "Everything was withheld" is itself a
+  // statement about the private stack, so the public surface does not distinguish
+  // a deny-all from a quiet day.
+  assert.ok(!JSON.stringify(surface.summary).includes('deny_all'));
+});
+
+/* ---------------------------------------------------- the public heartbeat --- */
+
+test('the public heartbeat drops the private fields rather than coarsening them', () => {
+  // A failure streak is a fact about the private run, and `1` on a page is as
+  // much a disclosure as `7`.
+  const hb = { last_run_at: 'T', last_status: 'degraded', consecutive_failures: 4, last_success_at: 'S' };
+  assert.deepEqual(publicHeartbeat(hb, []), { last_run_at: 'T', last_status: 'ok' });
+  assert.deepEqual(publicHeartbeat(hb, [{ source: 'osv', error: 'x' }]), {
+    last_run_at: 'T',
+    last_status: 'degraded',
+  });
+  assert.deepEqual(publicHeartbeat(null, []), { last_run_at: null, last_status: 'ok' });
+  assert.deepEqual(Object.keys(publicHeartbeat(hb, [])), ['last_run_at', 'last_status']);
+});
+
+test('both heartbeat placements agree, and a narration gap is not a public fact', () => {
+  // The acceptance is an equality, not "both are safe": the top-level scalars
+  // `renderSummary` derives and the nested object the page reads are handed the
+  // same reduced object, so they cannot drift apart.
+  const privateHb = { last_run_at: 'T', last_status: 'degraded', consecutive_failures: 2, last_success_at: null };
+  const pl = { ...payload(), errors: [] };
+  const surface = buildPublicSurface({ payload: pl, decisions: [], stack: stack(), heartbeat: privateHb });
+
+  assert.equal(surface.summary.last_status, surface.summary.heartbeat.last_status);
+  assert.equal(surface.summary.last_run_at, surface.summary.heartbeat.last_run_at);
+  assert.equal(surface.summary.last_status, 'ok', 'the private `degraded` came from a narration gap');
+
+  const published = JSON.stringify(surface.summary);
+  assert.ok(!published.includes('consecutive_failures'));
+  assert.ok(!published.includes('last_success_at'));
+});
+
+test('a failure bound to a private name publishes the same status as no failure at all', () => {
+  // The verifier's repro, stated as an equality. A payload whose only error names
+  // a private package must not be distinguishable from a payload with no errors:
+  // the failure is real, and it is not a public fact.
+  const privateOnly = { ...payload(), errors: [{ source: 'Go', name: SENTINEL, error: 'unsupported ecosystem' }] };
+  const none = { ...payload(), errors: [] };
+  const withPrivate = buildPublicSurface({ payload: privateOnly, decisions: [], stack: stack(), heartbeat: HEARTBEAT });
+  const withNone = buildPublicSurface({ payload: none, decisions: [], stack: stack(), heartbeat: HEARTBEAT });
+  assert.equal(withPrivate.summary.last_status, withNone.summary.last_status);
+  assert.equal(withPrivate.summary.last_status, 'ok');
+
+  // The other direction, so the derivation is not simply hardcoded to 'ok': a
+  // whole-source failure carries no `name`, survives projection, and is
+  // legitimately public — I11 wants a real failure loud.
+  const wholeSource = { ...payload(), errors: [{ source: 'osv', error: 'the whole source did not answer' }] };
+  const withPublic = buildPublicSurface({ payload: wholeSource, decisions: [], stack: stack(), heartbeat: HEARTBEAT });
+  assert.equal(
+    withPublic.summary.last_status,
+    'degraded',
+    'silencing a public failure in order to hide a private one is the wrong trade',
+  );
 });
 
 test('every published count is derived from the projected set, not the private one', () => {
