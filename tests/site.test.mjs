@@ -314,3 +314,110 @@ test('the streak sweep can fail — a private heartbeat shape in the public summ
   const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
   assert.match(index, /3 consecutive failure/, 'the sweep must be able to see the phrase it forbids');
 });
+
+test('a withheld digest says so — a broken marker is not a quiet day', () => {
+  // `buildPublicSurface()` keeps a broken marker loud (`withheld_reason`, plus
+  // the count) and a deny-all silent. The page honoured neither half: measured,
+  // a summary carrying `withheld_reason` rendered **byte-identical** to a healthy
+  // instance with nothing to report. An operator whose marker was never read — a
+  // typo, a missing key — saw a clean empty page and had no signal at all, which
+  // is the failure §I11 exists to forbid: a component that produced nothing must
+  // record why.
+  const dir = sandbox();
+  const summaryPath = path.join(dir, 'data/public-summary.json');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  summary.withheld_reason = 'invalid-marker';
+  summary.invalid_marker = 2;
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+  const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
+  assert.match(index, /being withheld/, 'a broken marker has to be visible on the page');
+  assert.match(index, /2 problem/, 'the count travels; the entries do not');
+  assert.match(index, /To fix it/, 'the page guides: it names the file and what to check');
+  // The counts are derived from a document this run refused to write, so they
+  // read "0 packages watched" — which is false, and contradicts the sentence
+  // directly above it saying the stack is not empty. They are replaced rather
+  // than printed, and the replacement says why, so the absence is not a bug.
+  assert.doesNotMatch(index, /packages watched/, 'a withheld run must not print false zeros');
+  assert.match(index, /Counts are not shown/, 'the absence is explained rather than left bare');
+});
+
+test('a deny-all stays silent — the banner keys on the reason, not on a zero count', () => {
+  // The twin, and the half that is easy to get wrong. A deny-all is a *choice*,
+  // not a failure: "everything was withheld" is itself a statement about the
+  // private stack, so it must stay indistinguishable from a quiet day. A banner
+  // keyed on a zero count rather than on `withheld_reason` would print here.
+  //
+  // The assertion is only non-vacuous beside the test above: that one proves the
+  // phrase is reachable, this one proves it is not reached by an empty day.
+  const dir = sandbox();
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+  const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
+  assert.doesNotMatch(index, /being withheld/);
+  // A quiet day keeps its counts. This is what makes the assertion above
+  // non-vacuous in the other direction too: suppressing the band is not a
+  // general behaviour, it is a consequence of having nothing true to show.
+  assert.match(index, /packages watched/, 'a quiet day still shows its counts');
+});
+
+test('the header pill never claims ok while the digest is being withheld', () => {
+  // `publicHeartbeat()` re-derives `last_status` from the **published** error
+  // list, so a run that withheld everything still reports `ok`: it published
+  // nothing, therefore nothing failed. Rendered as a pill beside the H1, that
+  // put a calm "OK" two lines above a banner saying the digest was being
+  // withheld — the reader's first impression, and the wrong one.
+  //
+  // `headerStatus()` reads `withheld_reason`, the same field the banner reads,
+  // so the two cannot disagree. This does not fix `publicHeartbeat()`: whether a
+  // withheld run should be recorded as a failure is a question about the private
+  // run, and answering it here would put a second opinion about status on the
+  // public surface. It only stops the page making a claim it cannot support.
+  //
+  // Both directions are asserted. Either half alone passes on a page that prints
+  // no pill at all, which is exactly the state this test exists to rule out.
+  const healthy = sandbox();
+  const okRun = run(healthy);
+  assert.equal(okRun.status, 0, okRun.stderr);
+  assert.match(fs.readFileSync(path.join(healthy, 'site/index.html'), 'utf8'), />OK</);
+
+  const withheld = sandbox();
+  const summaryPath = path.join(withheld, 'data/public-summary.json');
+  const summary = JSON.parse(fs.readFileSync(summaryPath, 'utf8'));
+  summary.withheld_reason = 'invalid-marker';
+  summary.invalid_marker = 2;
+  fs.writeFileSync(summaryPath, JSON.stringify(summary, null, 2) + '\n', 'utf8');
+
+  const withheldRun = run(withheld);
+  assert.equal(withheldRun.status, 0, withheldRun.stderr);
+  const index = fs.readFileSync(path.join(withheld, 'site/index.html'), 'utf8');
+  assert.match(index, />WITHHELD</, 'the pill has to agree with the banner beneath it');
+  assert.doesNotMatch(index, />OK</, 'the reassuring pill is the one thing that must not survive');
+});
+
+test('the page draws the run, and the drawing names every stage and the gate', () => {
+  // The run strip is the only place the page describes the *system* rather than
+  // this run, which is why it renders even on an instance that has never
+  // executed: a page that still explains what would happen beats an empty one.
+  //
+  // The graph it draws is read off `digest.yml` — `fetch` -> `narrate` ->
+  // `commit`, with `heartbeat` reached only from the failure branch. Four jobs
+  // and not one is a consequence of I1, and the gate is drawn on the wire
+  // between `narrate` and `commit` because that is the claim being made: the
+  // deciding step is not the step holding the model key.
+  //
+  // Asserted on the stage names and not on the element, because a strip whose
+  // nodes were lost to a bad edit would still be an `<svg>` and would still pass
+  // a presence check.
+  const dir = sandbox();
+  const result = run(dir);
+  assert.equal(result.status, 0, result.stderr);
+  const index = fs.readFileSync(path.join(dir, 'site/index.html'), 'utf8');
+  for (const stage of ['FETCH', 'NARRATE', 'COMMIT', 'HEARTBEAT']) {
+    assert.match(index, new RegExp(`>${stage}<`), `the strip names ${stage}`);
+  }
+  assert.match(index, />GATE</, 'the strip marks the gate');
+  assert.match(index, /no model key/, 'and says which job does not hold one');
+});
