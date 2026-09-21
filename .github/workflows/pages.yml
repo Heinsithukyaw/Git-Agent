@@ -68,6 +68,68 @@ jobs:
       name: github-pages
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
+      # Pages publishes the site, not the repository's visibility. A Pages site
+      # built from a **private** repository is still readable by anyone on the
+      # internet — access-controlled Pages needs GitHub Enterprise Cloud, and only
+      # for organisation-owned project sites. So on Pro/Team, or a personal
+      # account, enabling this workflow publishes the digest, and the digest names
+      # the packages watched.
+      #
+      # It warns, and does not fail. Publishing a digest you are willing to
+      # publish is a legitimate choice, and README § "Where it runs" already tells
+      # an operator whose stack must stay private not to enable this file at all;
+      # a gate here would refuse a valid configuration rather than inform it. It
+      # sits in the deploy job because that is the job that publishes, and a
+      # caveat belongs beside the act it qualifies.
+      - name: Warn — a private repository does not make a private site
+        env:
+          VISIBILITY: ${{ github.event.repository.visibility }}
+          IS_PRIVATE: ${{ github.event.repository.private }}
+        run: |
+          set -euo pipefail
+
+          # `visibility` is the field we want; `private` is the older boolean and
+          # is the fallback. If neither is present — a payload shape we did not
+          # expect — that reads as `unknown` rather than `public`, because a
+          # check that cannot tell must never report that all is well.
+          visibility="${VISIBILITY:-}"
+          if [ -z "$visibility" ]; then
+            case "${IS_PRIVATE:-}" in
+              true)  visibility=private ;;
+              false) visibility=public  ;;
+              *)     visibility=unknown ;;
+            esac
+          fi
+
+          if [ "$visibility" = "public" ]; then
+            echo "This repository is public. The caveat does not apply — the"
+            echo "repository is already the wider disclosure, with Pages off."
+            exit 0
+          fi
+
+          echo "::warning::This repository is ${visibility}, but the Pages site it is about to publish is world-readable."
+
+          # The annotation is dismissed with the run; the summary is still on the
+          # run page when someone audits it months later. Falling back to
+          # /dev/null keeps this step runnable under `act`, which does not set
+          # GITHUB_STEP_SUMMARY — the annotation is the part that must not degrade.
+          summary="${GITHUB_STEP_SUMMARY:-/dev/null}"
+          printf '\n## Pages publishes the site, not the repository visibility\n\n' >> "$summary"
+          printf 'This repository is **%s**. The site this job is publishing is **readable by anyone on the internet** — access-controlled Pages needs GitHub Enterprise Cloud, and only for organisation-owned project sites.\n\n' "$visibility" >> "$summary"
+          cat >> "$summary" <<'SUMMARY'
+          What the site serves:
+
+          | File | What it discloses |
+          |---|---|
+          | `digest/public-<date>.md` | the digest, narration included |
+          | `data/public-summary.json` | the counts, including `packages watched` |
+
+          The digest names the packages you watch. If your stack must stay private,
+          disable this workflow (`.github/workflows/pages.yml`).
+
+          See README § *Pages publishes the site, not the repository's visibility*.
+          SUMMARY
+
       - name: Deploy
         id: deploy
         uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4.0.5

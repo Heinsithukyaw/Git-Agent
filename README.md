@@ -394,8 +394,11 @@ private repository is still readable by anyone on the internet.**
 So on Pro/Team — or a personal account — enabling `pages.yml` on your private instance
 publishes your digest, and the digest names the packages you watch. `site/index.html` also
 prints `packages watched`. It is opt-in for exactly this reason: `pages.yml` fails loudly on
-the deploy step when Pages is not enabled, and nothing else is affected. **If your stack must
-stay private, do not enable it.**
+the deploy step when Pages is not enabled, and nothing else is affected. It also **warns on
+the deploy step when the repository is private**, naming the two files it is about to
+publish — a warning rather than a failure, because publishing a digest you are willing to
+publish is a legitimate choice, not a mistake. **If your stack must stay private, do not
+enable it.**
 
 ### If you would rather run only one repository
 

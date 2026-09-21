@@ -704,6 +704,17 @@ Four consequences that shape what may be committed here:
   which is the first thing the template asks them to do. The seed rule is a rule
   about *this* repository, so it is checked before publishing rather than on every
   run.
+- **Rule 4 is surfaced at run time, in `pages.yml`, because it cannot be a check.**
+  Whether publishing is safe is a property of the *instance* — its visibility, its
+  watch list — and by the argument above a per-push check would fail the first
+  thing the template asks a user to do. So the deploy job resolves the
+  repository's visibility and prints the caveat as a `::warning::` annotation and a
+  step summary, immediately before it deploys. **It warns; it does not fail.**
+  Publishing a digest you are willing to publish is a legitimate choice, and a gate
+  here would refuse a valid configuration rather than inform it. Visibility is read
+  from `github.event.repository.visibility`, falling back to `.private`; when
+  neither is present the step reads `unknown` **and warns anyway**, because *could
+  not tell* must never read as *safe to publish*.
 - **Also audited before publishing**, because publishing is a one-way door and
   "publish, then check" is not an available ordering:
   - no credential anywhere in **history** — the one thing a private repository
