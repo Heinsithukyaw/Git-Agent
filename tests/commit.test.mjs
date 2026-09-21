@@ -535,3 +535,272 @@ test('the committed endpoint record carries no host and no model', () => {
   assert.equal(committed.capabilities.chat_completions, true, 'the measurement is the point');
   assert.equal(committed.timings.chat_ms, 42);
 });
+
+/* ------------------------------------------------------- pipeline canary --- */
+
+/**
+ * The pipeline canary: `commit-step` and `render-site`, end to end.
+ *
+ * I2's second clause asserts statically that the commit step *writes* the
+ * projected surface. That is necessary and it is not sufficient: a clause over
+ * the shape of the code cannot see a write with the **wrong content**, and it
+ * never executes anything. Both defects this canary exists for were content
+ * defects — the command argument that was stripped of its author and not of its
+ * argument, and the drop record that published a cardinality of the watch list.
+ *
+ * So this runs the real pipeline in a synthetic tree: `commit-step.mjs` over a
+ * sentinel private package present in the payload, the decisions, the watch list
+ * and the command log, then `render-site.mjs` over what it committed, then a
+ * sweep of every byte under `site/`. `tests/pubsafe.test.mjs` builds its
+ * synthetic trees the same way — a temporary directory, run as a child process,
+ * because `lib/store.mjs` resolves against the process's cwd.
+ *
+ * Three controls, so that a green run means something:
+ *
+ *   - a **positive control** — a public package name must be found, or a sweep
+ *     whose matcher had stopped working would be green over a leak;
+ *   - a **fixture control** — the private digest must carry the sentinel, or the
+ *     absence below is an empty fixture rather than a projection;
+ *   - a **must-fail twin** — with the private artifacts published as the public
+ *     ones, the sweep must find the sentinel.
+ */
+const SENTINEL = 'internal/payments-service';
+const PRIVATE_UPSTREAM = 'acme-corp/platform';
+const PRIVATE_FEED = 'https://internal.example/feed.xml';
+const LOGIN = 'octocat';
+const PUBLIC_PKG = 'express';
+const DATE = OBSERVED.slice(0, 10);
+const SITE_SCRIPT = path.join(REPO, 'scripts/render-site.mjs');
+const SECRETS = [SENTINEL, PRIVATE_UPSTREAM, PRIVATE_FEED, LOGIN];
+
+/**
+ * Delimited-token match, not substring: `express` contains `press`, so a raw
+ * substring sweep would fail spuriously — and a check that fails when it should
+ * not gets disabled. Package-name characters are `[A-Za-z0-9._/@-]`, so a match
+ * must be flanked by a character outside that class.
+ */
+function containsToken(text, token) {
+  const escaped = token.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+  return new RegExp(`(^|[^A-Za-z0-9._/@-])${escaped}([^A-Za-z0-9._/@-]|$)`).test(text);
+}
+
+/** The marker: one package listed, one watched and deliberately not listed. */
+function canaryStack() {
+  return {
+    packages: [
+      { name: PUBLIC_PKG, ecosystem: 'npm', pinned: '4.18.2' },
+      { name: SENTINEL, ecosystem: 'Go', pinned: 'v0.4.1' },
+    ],
+    watch: {
+      upstreams: ['nodejs/node', PRIVATE_UPSTREAM],
+      feeds: ['https://github.blog/changelog/feed/', PRIVATE_FEED],
+    },
+    public_packages: [PUBLIC_PKG],
+    public_upstreams: ['nodejs/node'],
+    public_feeds: ['https://github.blog/changelog/feed/'],
+  };
+}
+
+/** The payload, with the private entity in every list the digest can render. */
+function canaryPayload() {
+  return {
+    observed_at: OBSERVED,
+    packages: [
+      { name: PUBLIC_PKG, ecosystem: 'npm', pinned: '4.18.2', upstream: { latest: '5.2.1' }, fetched_at: 'x' },
+      { name: SENTINEL, ecosystem: 'Go', pinned: 'v0.4.1', upstream: { latest: 'v0.5.0' }, fetched_at: 'x' },
+    ],
+    advisories: [
+      { id: 'GHSA-aaaa-bbbb-cccc', package: PUBLIC_PKG, ecosystem: 'npm', summary: 'a public one' },
+      { id: 'GHSA-dddd-eeee-ffff', package: SENTINEL, ecosystem: 'Go', summary: 'a private one' },
+    ],
+    releases: [
+      { kind: 'release', slug: 'nodejs/node', tag: 'v22.0.0', url: 'https://example.invalid/node' },
+      { kind: 'release', slug: PRIVATE_UPSTREAM, tag: 'v1.0.0', url: 'https://example.invalid/private' },
+    ],
+    feeds: [
+      {
+        kind: 'feed',
+        url: 'https://github.blog/changelog/feed/',
+        items: [{ title: 'public item', link: 'x', published: 'y' }],
+      },
+      { kind: 'feed', url: PRIVATE_FEED, items: [{ title: 'private item', link: 'x', published: 'y' }] },
+    ],
+    errors: [
+      { source: 'osv', error: 'the whole source did not answer' },
+      { source: 'Go', name: SENTINEL, error: 'unsupported ecosystem' },
+      { source: 'github', name: PRIVATE_UPSTREAM, error: 'HTTP 404' },
+      { source: 'feed', name: PRIVATE_FEED, error: 'timeout' },
+    ],
+    watch: {
+      upstreams: ['nodejs/node', PRIVATE_UPSTREAM],
+      feeds: ['https://github.blog/changelog/feed/', PRIVATE_FEED],
+    },
+  };
+}
+
+/** One decision row per package, so the decision table is a leak route too. */
+function canaryDecisions() {
+  return [
+    {
+      observed_at: OBSERVED,
+      advisory_id: 'GHSA-aaaa-bbbb-cccc',
+      package: PUBLIC_PKG,
+      ecosystem: 'npm',
+      pinned: '4.18.2',
+      upgrade: '5.2.1',
+      decision: 'act',
+      reason: 'affected, and we import express',
+      layer: 'rules',
+      severity: 5.3,
+    },
+    {
+      observed_at: OBSERVED,
+      advisory_id: 'GHSA-dddd-eeee-ffff',
+      package: SENTINEL,
+      ecosystem: 'Go',
+      pinned: 'v0.4.1',
+      upgrade: 'v0.5.0',
+      decision: 'act',
+      reason: 'affected, and we import a private symbol',
+      layer: 'rules',
+      severity: 9.1,
+    },
+  ];
+}
+
+function canarySandbox() {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'git-agent-canary-'));
+  fs.mkdirSync(path.join(dir, '.run'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'data'), { recursive: true });
+  fs.mkdirSync(path.join(dir, 'history'), { recursive: true });
+  fs.writeFileSync(path.join(dir, '.run/payload.json'), JSON.stringify(canaryPayload(), null, 2) + '\n', 'utf8');
+  fs.writeFileSync(path.join(dir, '.run/decisions.json'), JSON.stringify(canaryDecisions(), null, 2) + '\n', 'utf8');
+  fs.writeFileSync(
+    path.join(dir, '.run/narration.json'),
+    JSON.stringify({ recorded_at: OBSERVED, ...KEYLESS_STATUS }, null, 2) + '\n',
+    'utf8',
+  );
+  fs.writeFileSync(path.join(dir, 'data/stack.json'), JSON.stringify(canaryStack(), null, 2) + '\n', 'utf8');
+  // The command log. The login is in it, and the second row's argument names the
+  // private package — a row `validate()` accepts, because the package is
+  // *watched*, and watched is a superset of published.
+  fs.writeFileSync(
+    path.join(dir, 'history/commands.jsonl'),
+    [
+      JSON.stringify({
+        comment_id: 1,
+        author: LOGIN,
+        verb: 'why',
+        arg: PUBLIC_PKG,
+        started_at: OBSERVED,
+        outcome: 'answered',
+      }),
+      JSON.stringify({
+        comment_id: 2,
+        author: LOGIN,
+        verb: 'why',
+        arg: SENTINEL,
+        started_at: OBSERVED,
+        outcome: 'answered',
+      }),
+      '',
+    ].join('\n'),
+    'utf8',
+  );
+  return dir;
+}
+
+function runSite(dir) {
+  return spawnSync(process.execPath, [SITE_SCRIPT], {
+    cwd: dir,
+    encoding: 'utf8',
+    env: { ...process.env, GITHUB_REPOSITORY: 'owner/repo' },
+  });
+}
+
+/** Every file under `site/`, as text. The sweep is over the written bytes. */
+function siteFiles(dir) {
+  const files = [];
+  const walk = (rel) => {
+    for (const entry of fs.readdirSync(path.join(dir, rel), { withFileTypes: true })) {
+      const next = path.join(rel, entry.name);
+      if (entry.isDirectory()) walk(next);
+      else files.push({ rel: next, text: fs.readFileSync(path.join(dir, next), 'utf8') });
+    }
+  };
+  walk('site');
+  return files;
+}
+
+test('pipeline canary: the published site carries no private name, end to end', () => {
+  const dir = canarySandbox();
+  const committed = run(dir);
+  assert.equal(committed.status, 0, committed.stderr);
+
+  const rendered = runSite(dir);
+  assert.equal(rendered.status, 0, rendered.stderr);
+
+  const files = siteFiles(dir);
+  assert.ok(files.length > 0, 'the render produced no files, so the sweep proves nothing');
+  for (const f of files) {
+    for (const secret of SECRETS) {
+      assert.ok(!containsToken(f.text, secret), `${secret} reached ${f.rel}`);
+    }
+  }
+
+  // The two committed public artifacts, named directly. The site is built from
+  // them, so a sweep over `site/` alone would not say which one was wrong.
+  const publicDigest = fs.readFileSync(path.join(dir, `digest/public-${DATE}.md`), 'utf8');
+  const publicSummary = fs.readFileSync(path.join(dir, 'data/public-summary.json'), 'utf8');
+  for (const secret of SECRETS) {
+    assert.ok(!publicDigest.includes(secret), `${secret} is in the public digest`);
+    assert.ok(!publicSummary.includes(secret), `${secret} is in the public summary`);
+  }
+
+  // The positive control. Without it, a sweep whose matcher had stopped working
+  // would be green over a leak.
+  assert.ok(
+    files.some((f) => containsToken(f.text, PUBLIC_PKG)),
+    'the sweep must be able to find a public name, or absence means nothing',
+  );
+
+  // The fixture control: the private artifacts really do carry the sentinel, by
+  // three routes — the package list, the decision table, and a command whose
+  // argument names it. So the absence above is the projection, not an empty tree.
+  const privateDigest = fs.readFileSync(path.join(dir, `digest/${DATE}.md`), 'utf8');
+  assert.ok(containsToken(privateDigest, SENTINEL), 'the private digest carries the sentinel');
+  assert.ok(containsToken(privateDigest, PRIVATE_UPSTREAM), 'and the private upstream');
+  assert.ok(
+    fs.readFileSync(path.join(dir, 'history/commands.jsonl'), 'utf8').includes(LOGIN),
+    'and the login stays in the audit trail, which is the one place it belongs',
+  );
+
+  // The drop record is a cardinality of the watch list, so it is committed to the
+  // private summary and not to the public one.
+  assert.ok(
+    fs.readFileSync(path.join(dir, 'data/summary.json'), 'utf8').includes('"drop"'),
+    'the private summary carries the drop record',
+  );
+  assert.ok(!publicSummary.includes('"drop"'), 'and the public one does not');
+});
+
+test('the pipeline canary is not vacuous: publishing the private artifacts leaks the sentinel', () => {
+  // The must-fail twin, and exactly the blind spot of I2's static clause: a write
+  // with the wrong *content*. The clause sees the writes present; only running
+  // the pipeline sees what they contain.
+  const dir = canarySandbox();
+  const committed = run(dir);
+  assert.equal(committed.status, 0, committed.stderr);
+
+  fs.copyFileSync(path.join(dir, `digest/${DATE}.md`), path.join(dir, `digest/public-${DATE}.md`));
+  fs.copyFileSync(path.join(dir, 'data/summary.json'), path.join(dir, 'data/public-summary.json'));
+
+  const rendered = runSite(dir);
+  assert.equal(rendered.status, 0, rendered.stderr);
+
+  const files = siteFiles(dir);
+  assert.ok(
+    files.some((f) => containsToken(f.text, SENTINEL)),
+    'the sweep must find the sentinel when the private artifacts are the published ones',
+  );
+});
