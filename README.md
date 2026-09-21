@@ -42,7 +42,11 @@ and that is enforced by GitHub, not by discipline.
 
 1. **Use this template**, or copy the repository.
 2. **Edit `data/stack.json`** — the packages you want watched, and for each one the
-   symbols you import. This file is both the watch list and the argument allowlist.
+   symbols you import. This file has three jobs: it is the watch list, the argument
+   allowlist (`/agent bump <pkg>` only accepts a name that appears here), and — in
+   the three `public_*` lists — the publication allowlist. **Anything not listed as
+   public is not publishable**, so an instance watching private packages should list
+   only what it is willing to publish.
 3. **Set the repository variables** (Settings → Secrets and variables → Actions →
    Variables). None is required for the agent to work:
 
@@ -93,7 +97,7 @@ repositories, and the split is the whole security story.
 |---|---|---|---|
 | **Template** — this one | public | no secrets; the seed `data/stack.json` | a live demo digest, daily |
 | **Your instance** | private | your real stack, your key | your digest, daily |
-| **Status** — optional, *not built yet* | public | a subset you marked publishable | a second, redacted digest |
+| **Status** — optional | public | the subset you listed as publishable | a second, redacted digest |
 
 **The public template holds no secrets and runs against the seed stack as a live
 demo.** That is deliberate, and it is the point: the repository anyone can read is
@@ -109,16 +113,30 @@ history, its own settings, and its own secrets. Set `LLM_API_KEY` there and
 nowhere else.
 
 **An optional third repository** holds the part of your digest you are willing to
-publish — the same pipeline, a narrower watch list, a renderer that drops
-anything not explicitly marked public. Build it only if you want a public status
-page. It is not a way to make a private instance public; it is a second instance
-with a smaller watch list.
+publish. Build it only if you want a public status page. It is not a way to make
+a private instance public; it is a second instance with a smaller watch list.
 
-**The redaction is a design, not a shipped feature.** Nothing in this repository
-marks a package publishable and nothing drops an unmarked one, so a third
-repository created today would publish its **entire** watch list. Until that is
-built, a public status page means hand-maintaining a `data/stack.json` that
-contains only packages you are willing to publish.
+**What decides what may be published is built, and it fails closed.** Three lists
+in `data/stack.json` — `public_packages`, `public_upstreams`, `public_feeds` —
+name the subset that may reach the public surface, and **the default for anything
+unlisted is *not publishable*.** The projection runs in the `commit` job, which is
+the one that holds no key; the public digest is **templated rather than narrated**,
+because prose cannot be filtered and is therefore dropped rather than redacted; and
+every count on the public surface is derived *after* the projection, because
+`packages: 6` beside a page showing two rows states the size of what was withheld.
+
+Two things worth knowing before you rely on it:
+
+- **The seed stack's own default is "publish everything".** It lists all six
+  packages, because this repository is a public demo watching widely-used packages
+  and one public feed. An instance watching its own private packages should list
+  only what it is willing to publish. An explicit empty list is a valid deny-all
+  rather than an error.
+- **The other direction is not built.** There is no `config/private.json`, so
+  nothing stops a private package from being *fetched* and sent to the model you
+  configured. Publication is closed first because it is the direction with no
+  remedy: a name sent to an endpoint you chose can be rotated, a name published
+  cannot be recalled.
 
 What the split buys you:
 
@@ -231,7 +249,9 @@ long as a job takes to start, which is a minute, not a second.
 ```
 .github/workflows/   digest (4 jobs) · ask (3 jobs) · act · sandbox · pages · ci
 lib/                 llm · probe · commands · sandbox · triage
-                     plus internals: store · version · gate · sources · render · invariants
+                     plus internals: store · version · gate · sources · render ·
+                     invariants · pubsafe · github
+                     and the publication pair: public-surface · publishable
 scripts/             one entry point per job
 data/                state — all behind the change gate except heartbeat.json
 history/             append-only: events · commands · runs (hash-chained)
@@ -268,6 +288,13 @@ rule at all. The short version:
 - **One privilege per job.** No component holds both a secret and a write token.
 - **The gate decides.** Every entity in generated prose must appear in the fetched
   payload, and the gate runs only where no model key exists.
+- **What reaches the public surface is projected, not filtered.** The publication
+  allowlist lives in `data/stack.json` and the projection runs in the keyless `commit`
+  job, *after* the gate, so the renderer reads only what was already projected and is
+  structurally unable to express an unredacted public document. The default for anything
+  unlisted is **not publishable**, and every count is derived after the projection —
+  because `packages: 6` beside a page showing two rows states the size of what was
+  withheld.
 - **Bounded writes, fail-closed.** The writer refuses anything outside its allowlist,
   and CI re-checks the actual diff before the commit.
 - **Everything is behind the change gate except one file** — `data/heartbeat.json`, so a
@@ -275,6 +302,9 @@ rule at all. The short version:
 - **Append-only history, hash-chained.** Narration is excluded: prose is generated
   content, not a fact about the world.
 - **The sandbox never receives a secret**, and ships off by default.
+- **The web surface holds no key and calls no model.** The composer builds a prefilled
+  issue URL and holds nothing else — a static page cannot dispatch a workflow without a
+  token embedded in it, and that is enforced by GitHub rather than by discipline.
 - **No provider names in the code.** The agent has no opinion about your endpoint.
 - **The documented configuration surface is the whole configuration surface.** Every
   variable a workflow asks for is in the table, and every variable the code reads is

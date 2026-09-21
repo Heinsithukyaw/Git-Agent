@@ -515,6 +515,90 @@ would pass over a pipeline that never delivers it.
   an empty patch or an empty decision set arriving silently is the failure this
   invariant exists to prevent.
 
+### I16 — The public surface is projected, and the renderer reads only the projection
+
+**The public digest is the private digest with a filter applied, and the filter
+runs in the job that holds no key.** This is the second direction of the
+disclosure §I2 guards, and it is the irreversible one: a repository that has been
+public cannot be made un-public, forks detach and persist, and an append-only
+file that recorded a name can never be rewritten. So the default for every entry
+is **not publishable**, and a name reaches the public surface only because it was
+listed there.
+
+`data/stack.json` carries three publication lists — `public_packages`,
+`public_upstreams`, `public_feeds` — naming the subset of `packages`,
+`watch.upstreams` and `watch.feeds` that may be rendered onto the Pages site.
+`lib/publishable.mjs` decides what may be published; `lib/public-surface.mjs` is
+where that decision is *applied*, and it is one module for one reason: the
+projection has exactly one legitimate execution point, and a helper both the
+pipeline and the test suite call is the only way to be sure the tested path is
+the shipped one (§5's rule — *an option that is unit-tested and not wired proves
+nothing*).
+
+**Why the commit job, and not the renderer.** The obvious home for a publication
+filter is the thing that publishes. It cannot be there: `pages.yml` checks out
+committed files and downloads no artifact, so `scripts/render-site.mjs` never
+sees a payload and has no `(payload, policy)` to project. `commit` is the only
+component holding the payload, the decisions and a write token — and it is the
+keyless job (I1/I2), which is where a control belongs. The renderer reads what
+was already projected and never projects.
+
+That makes the renderer's **read set** the security boundary, and this is the
+invariant that holds it. Three assertions, all static:
+
+- **no literal in the renderer resolves into a collector root** — the watch list,
+  the run chain, the command log, the triage log, the heartbeat. Detection is by
+  content, not by function name, so an unenumerated reader is caught by the path
+  it names;
+- **the declared `PUBLIC_SUMMARY` must carry the marker the projection uses**
+  (`PUBLIC_DIGEST_PREFIX`). The permitted set is *derived* from that declaration,
+  so without this guard re-pointing the constant would simply widen the set to
+  match — and the first version of the guard was a list of three forbidden paths,
+  which passed `data/heartbeat.json`, `data/triage.jsonl` and
+  `history/runs.jsonl`. A projected artifact is **marked**, not listed;
+- **a read target is one of exactly three forms**: an allowlisted literal, the
+  declared constant identifier, or `path.join(…)` whose arguments are folded —
+  every one of them — when they are literals or const-bound names.
+
+**The rule is a property of the resolved path, not of the spelling.** Three
+clauses decided by spelling, and each left the class open, so one path had two
+verdicts:
+
+```
+path.join('digest', '..', 'data', 'stack.json')   refused
+path.join('digest', '../data/stack.json')         allowed
+```
+
+The exemption was a prefix test that never collapsed `..`; the `path.join` branch
+folded only its first argument; and the candidate test excluded any literal
+containing `..`, which made a traversal invisible to the content clause *and* —
+when the reader sat outside `READ_FUNCTIONS` — to the form clause as well. All
+three now resolve the path first. **A check that decides by spelling leaves the
+class open however many spellings you enumerate**; the fix is a predicate over
+the resolved value. Where a component is not statically known the path cannot be
+resolved at all, so a traversal among the parts that *are* known fails closed
+instead.
+
+- **Enforced by:** `lib/invariants.mjs` → `checkPublicRendererReadsNoPrivatePath()`.
+- **The canary is the other half.** `e20fa1c` runs `commit-step` end to end
+  against a sentinel present in `packages` and absent from every `public_*` list,
+  and asserts the sentinel reaches no published byte. The static check proves the
+  wiring; the canary proves the wiring *ran*.
+- **What it cannot see, and one of these is structural.** A target assembled at
+  runtime from no resolvable component — `fs.createReadStream(A + '/' + B)` —
+  passed to a reader outside `READ_FUNCTIONS`: there is no literal to resolve and
+  no name to recognise, so neither clause can fire. That is a real gap, it is the
+  reason the pipeline canary exists, and it is **asserted as passing** in
+  `tests/invariants.test.mjs` rather than left silent. Every other limit that once
+  sat beside it turned out to be an oversight rather than a boundary, which is
+  worth knowing before trusting the next one.
+- **A refusal proves nothing about which clause refused.** Three clauses can now
+  see a traversal, so each carries a mutant control that disables it and requires
+  its cases to flip green. That control caught an error in the list being tested:
+  one spelling was already refused before the fix, by a bare component literal the
+  content clause catches, and so never belonged in the group attributed to
+  resolution.
+
 ---
 
 ## 2. Where this runs
@@ -527,12 +611,31 @@ than a deployment preference.
 |---|---|---|---|
 | Template — this one | public | no secrets; the seed `data/stack.json` | a live demo digest |
 | Instance | private | the user's stack, the user's key | the user's digest |
-| Status — optional, **not built yet** | public | a subset marked publishable | a second, redacted digest |
+| Status — optional | public | the publishable subset, and nothing else | a second, redacted digest |
 
-**The Status row is a design, not a shipped feature.** Nothing here marks a
-package publishable and nothing redacts a digest, so a second instance built
-today would publish its whole watch list. Tracked as P2-1 in
-`ARCHITECTURE-REVIEW.md`.
+**The marker and the filter both exist**, so the Status row is a supported
+configuration rather than a design note. `data/stack.json` carries the three
+publication lists, `lib/public-surface.mjs` applies them in the `commit` job
+(I16), and the public digest is **templated rather than narrated** — prose cannot
+be filtered, so dropping it dissolves that route by construction. What remains a
+*choice* is the deployment shape, and the two options are not equivalent:
+
+- **one instance, a filtered surface.** The projection is written into the
+  instance and `pages.yml` publishes it. One source of truth and no duplicated
+  work. The catch is consequence 4 below: the site is world-readable however
+  private the repository is, so this publishes the filtered digest *on purpose*
+  and depends entirely on the filter being right.
+- **a separate Status repository.** A second instance pointed at a stack holding
+  only publishable entries. The filter becomes a second line rather than the only
+  one — the belt-and-braces shape — at the cost of two watch lists that can
+  disagree.
+
+**The half that is not built is the other direction.** There is no
+`config/private.json`, so nothing prevents a private package from being fetched
+and sent to the model — the disclosure `REPORT.md` §5.4 describes. The publication
+allowlist closed the irreversible direction first, and deliberately so: a name
+sent to an endpoint the user chose can be rotated, while a name published cannot
+be recalled.
 
 Four consequences that shape what may be committed here:
 
@@ -608,7 +711,8 @@ Four consequences that shape what may be committed here:
 .github/CODEOWNERS   the paths where a quiet change is worse than a loud one
 lib/                 the documented five: llm · probe · commands · sandbox · triage
                      plus internals: store · version · gate · sources · render ·
-                     invariants · pubsafe
+                     invariants · pubsafe · github
+                     and the publication pair: public-surface · publishable
 scripts/             one entry point per job
 tools/               the checks a human runs: invariants (per push) ·
                      public-safety (before publishing)
@@ -704,3 +808,19 @@ behaviour rather than the implemented one. So:
 **When a check fires, the first hypothesis is that the check is right.** Read the
 rule, then read the code it covers, then decide. "The check is too strict" is a
 conclusion, not a starting position.
+
+**The mirror image is a check that never fires, and running it cannot find that.**
+The publication guard (I16) was first written as a list of three forbidden paths,
+and passed three files that were in the repository — including
+`data/heartbeat.json`, the very field the projection had just removed. Its
+replacement was wrong in a second way: three clauses decided a path by how it was
+*spelled*, so one resolved path had two verdicts depending on whether the traversal
+was written as one argument or three. Neither defect was reachable by running the
+check. It was green, and correctly green, for every input anyone had thought to
+try.
+
+Both were found by asking **what would have to change for this to be wrong**, and
+then changing it. That is why a **must-fail control** belongs inside the check
+rather than beside it: a mutant that disables a clause and requires its cases to
+flip green. A refusal on its own proves nothing about which clause refused — and
+for a guard like this one, a refusal is the only output there is.
