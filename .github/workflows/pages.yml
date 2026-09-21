@@ -43,6 +43,14 @@ jobs:
       - name: Render
         run: node scripts/render-site.mjs
 
+      # The pages have just been rendered, so this is the only moment at which
+      # the check that scans them reads the bytes about to be uploaded rather
+      # than the committed copy. I10 fails closed when it finds no page, so
+      # dropping the render step fails the deploy here instead of passing
+      # quietly on the way to publishing an unscanned site.
+      - name: Invariants
+        run: node tools/check-invariants.mjs
+
       - name: Upload
         uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3.0.1
         with:

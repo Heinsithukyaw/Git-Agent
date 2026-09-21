@@ -158,15 +158,19 @@ function report(result) {
   );
 }
 
+/**
+ * The summary line for a passing check.
+ *
+ * This used to infer the sentence from *which fields a check happened to
+ * return* — `checked` meant "cross-job file(s) carried by an upload", because
+ * I15 returns a `checked` count. Adding a `checked` count to I10 therefore made
+ * the report claim I10 carried cross-job files: the verdict was right and the
+ * label belonged to another check. **The shape of a result is not its identity**,
+ * so each check now states its own sentence and this does not guess. A check that
+ * returns nothing gets `holds`, which is the one thing true of every check.
+ */
 function summaryOf(check) {
-  if (check.rows !== undefined) return `${check.rows} row(s), chain intact`;
-  if (check.pins !== undefined) return `${check.pins.length} action(s) pinned to a commit`;
-  if (check.allowed !== undefined) return `allowlist ${check.allowed.join(' / ')}`;
-  if (check.checked !== undefined) return `${check.checked} cross-job file(s) carried by an upload`;
-  if (check.documented !== undefined) {
-    return `${check.documented.length} name(s) documented, ${check.read.length} read by code`;
-  }
-  return 'holds';
+  return check.detail ?? 'holds';
 }
 
 function reportSingle(result) {

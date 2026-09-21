@@ -12,6 +12,7 @@
 
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
@@ -1822,6 +1823,57 @@ test('the sandbox workflow holds no secret and no write scope', () => {
 
 test('no page holds a credential, calls a model, or dispatches a workflow', () => {
   assert.equal(checkPagesHoldNoKey(ROOT).ok, true);
+});
+
+test('I10 refuses each of the three things a page must never do, and passes a clean one', () => {
+  const cases = [
+    ['<meta name="build" content="LLM_API_KEY">', /never hold a credential/],
+    ["fetch('https://api.example.com/v1/chat')", /never call a model/],
+    ['<button data-action="workflow_dispatch">', /never trigger a workflow/],
+  ];
+  for (const [body, expected] of cases) {
+    const result = checkPagesHoldNoKey(syntheticRoot({ 'site/index.html': `<html>${body}</html>` }));
+    assert.equal(result.ok, false, `${body} must be refused`);
+    assert.match(result.violations[0].rule, expected);
+  }
+
+  // The control. Without it, a check that refused everything would satisfy the
+  // three assertions above and read as strict rather than as broken.
+  const clean = checkPagesHoldNoKey(
+    syntheticRoot({ 'site/index.html': '<html><p>a page</p></html>' }),
+  );
+  assert.equal(clean.ok, true, 'a clean page must pass');
+  assert.equal(clean.checked, 1);
+});
+
+test('I10 fails closed when there is no page to look at', () => {
+  // `site/` is committed and both workflows render before this runs, so no pages
+  // means the check could not look. Reporting ok would let the rule stop being
+  // enforced, silently, the moment the render step was dropped.
+  const result = checkPagesHoldNoKey(syntheticRoot({ 'data/stack.json': '{}' }));
+  assert.equal(result.ok, false, 'an absent site/ must not read as a pass');
+  assert.match(result.violations[0].rule, /no page to check/);
+});
+
+test('the report puts each check own summary on its own line', () => {
+  // Asserted against the printed report rather than the returned object, because
+  // the defect was in the printing: `summaryOf()` inferred the sentence from the
+  // *fields* a check returned, and `checked` belonged to I15. Giving I10 a
+  // `checked` count made the report say I10 carried cross-job files — the verdict
+  // right, the label borrowed. Reading the object would not have caught it.
+  const out = execFileSync(process.execPath, ['tools/check-invariants.mjs'], {
+    cwd: ROOT,
+    encoding: 'utf8',
+  });
+  const line = out.split('\n').find((l) => l.includes('I10 pages hold no key'));
+  assert.ok(line, 'I10 must appear in the report');
+  assert.match(line, /page\(s\) checked/);
+  assert.doesNotMatch(line, /cross-job/, 'I10 is wearing the I15 label');
+  assert.match(
+    out.split('\n').find((l) => l.includes('I15 artifact handoff')),
+    /cross-job file/,
+    'I15 must keep its own summary',
+  );
 });
 
 test('the run log chains, or is empty', () => {

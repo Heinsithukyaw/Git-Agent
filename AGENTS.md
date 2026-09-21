@@ -330,6 +330,18 @@ way.
 verified; "dev help" is not. Rendering them in the same visual style destroys the
 property I2 exists to buy.
 
+**Enforced by:** `lib/invariants.mjs` → `checkPagesHoldNoKey()`, run in `ci.yml` and
+in `pages.yml`'s build job. **It scans pages that were just rendered, and that
+ordering is the check.** `site/*.html` are generated and `pages.yml` re-renders at
+deploy time, so the committed page and the served page are different files the
+moment the template changes. The first version scanned the committed copy while
+`pages.yml` uploaded a different one: measured on a tree with a credential injected
+into the page template, it reported `holds` at exit 0 without a render and two
+violations at exit 1 with one, the only difference being whether a human had run the
+renderer by hand. So `ci.yml` renders before the invariants, `pages.yml` renders,
+checks, and only then uploads, and an empty page set **fails closed** rather than
+passing — *could not look* must never read as *found nothing*.
+
 ### I11 — Honesty about time, and about what is missing
 
 Scheduled workflows are delayed under load and may be dropped. So a digest is

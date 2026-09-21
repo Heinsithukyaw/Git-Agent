@@ -36,6 +36,14 @@ jobs:
       - name: Unit tests
         run: npm test
 
+      # I10 scans the generated pages, so they have to be current before the
+      # invariants run. Without this the check reads whatever `site/` happens to
+      # be committed, while the pages that ship are the ones `pages.yml` renders
+      # at deploy time — so a credential introduced by a change to the template
+      # would be in no committed page and would pass here on its way out.
+      - name: Render the site
+        run: node scripts/render-site.mjs
+
       - name: Invariants
         run: node tools/check-invariants.mjs
 
