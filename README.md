@@ -2,6 +2,11 @@
 
 A git-native agent that watches your dependency stack and narrates a daily digest.
 
+<picture>
+  <source media="(prefers-color-scheme: dark)" srcset="./assets/fork-warning-dark.svg">
+  <img src="./assets/fork-warning.svg" width="1200" alt="Before you fork: a fork of this public repository can never be made private. The upstream maintainer can read every fork in the network, and deleting the fork does not retract the commits — they stay reachable from the upstream.">
+</picture>
+
 **There is no server, no database, and no front-end build step.** The repository *is* the
 instance: state lives in files, history is append-only, and every turn is a fresh job on a
 machine that is destroyed when the job ends. It remembers because it reads the repository,
@@ -309,9 +314,11 @@ result. You can watch it work; you cannot learn anything private from it.
 
 Your instance is a separate private repository, created with **Use this template** — not a
 fork. This matters: *you cannot fork a public repository into a private one.* A fork of this
-repository is public, inherits its visibility, and is permanently linked to it. "Use this
-template" makes a copy with its own history, its own settings, and its own secrets. Set
-`LLM_API_KEY` there and nowhere else.
+repository is public, inherits its visibility, and is permanently linked to it. Two
+consequences follow, and both outlive the fork: **the upstream maintainer can read every fork
+in the network**, and **deleting the fork does not retract the commits** — they stay reachable
+from the upstream. "Use this template" makes a copy with its own history, its own settings,
+and its own secrets. Set `LLM_API_KEY` there and nowhere else.
 
 An optional third repository holds the part of your digest you are willing to publish. Build
 it only if you want a public status page. It is not a way to make a private instance public;
