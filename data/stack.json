@@ -65,6 +65,9 @@
     "upstreams": ["nodejs/node"],
     "feeds": ["https://github.blog/changelog/feed/"]
   },
+  "public_packages": ["express", "lodash", "react", "requests", "serde", "github.com/gin-gonic/gin"],
+  "public_upstreams": ["nodejs/node"],
+  "public_feeds": ["https://github.blog/changelog/feed/"],
   "notes": [
     "`packages` is both the watch list and the argument allowlist: /agent bump <pkg> only",
     "accepts a name that appears here. That is what removes the shell-interpolation",
@@ -75,6 +78,17 @@
     "package lands in `uncertain` rather than in `act` or `watch`.",
     "",
     "`pinned` should match the lockfile. If it does not, the version arithmetic is",
-    "answering a question about a version you are not running."
+    "answering a question about a version you are not running.",
+    "",
+    "`public_packages`, `public_upstreams` and `public_feeds` are the publication",
+    "allowlist. They name the subset of `packages`, `watch.upstreams` and",
+    "`watch.feeds` that may be rendered onto the public surface (the Pages site).",
+    "The default for anything unlisted is NOT publishable, because publication is",
+    "irreversible: a repository that has been public cannot be made un-public, and",
+    "a name written to an append-only history can never be rewritten. Listing every",
+    "entry above is the demo's choice — it watches a handful of widely-used",
+    "packages and one public feed. An instance watching its own private packages",
+    "should list only what it is willing to publish, and an explicit empty list is a",
+    "valid deny-all rather than an error."
   ]
 }

@@ -290,7 +290,16 @@ function main() {
   write(path.join(SITE_DATA, 'summary.json'), {
     ...(summary ?? {}),
     heartbeat: heartbeat ?? null,
-    commands: readRows('history/commands.jsonl').slice(-10),
+    // The verb and the argument, never the author. `history/commands.jsonl` rows
+    // carry a GitHub login, and this file is written to a world-readable Pages
+    // artifact: publishing them raw puts a person's name on the public page.
+    // `lib/render.mjs:390-394` states the rule — "a login belongs to a person
+    // rather than to this repository" — and the login stays in
+    // `history/commands.jsonl`, which is the audit trail and the one place the
+    // question "who asked for this?" has to stay answerable.
+    commands: readRows('history/commands.jsonl')
+      .slice(-10)
+      .map(({ verb, arg, outcome }) => ({ verb, arg, outcome })),
   });
 
   write(path.join(SITE, '.nojekyll'), '');
