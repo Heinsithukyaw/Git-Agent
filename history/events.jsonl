@@ -1,0 +1,11 @@
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-qw6h-vgh9-j6wx","package":"express","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-rv95-896h-c2vc","package":"express","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-f23m-r3pf-42rh","package":"lodash","decision":"watch"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-r5fr-rjxr-66jc","package":"lodash","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-xxjr-mmjv-4gpg","package":"lodash","decision":"watch"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-9hjg-9r4m-mvj7","package":"requests","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-9wx4-h78v-vm56","package":"requests","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"GHSA-gc5v-m9x4-r6x2","package":"requests","decision":"watch"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"PYSEC-2026-1872","package":"requests","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"PYSEC-2026-1873","package":"requests","decision":"act"}
+{"at":"2026-09-21T21:15:41.716Z","kind":"flagged","advisory_id":"PYSEC-2026-2275","package":"requests","decision":"watch"}

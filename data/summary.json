@@ -1,0 +1,27 @@
+{
+  "generated_at": "2026-09-21T21:16:02.743Z",
+  "observed_at": "2026-09-21T21:15:41.716Z",
+  "advisories": 11,
+  "actionable": 7,
+  "uncertain": 0,
+  "clear": 0,
+  "packages": 6,
+  "sources_failed": 0,
+  "last_run_at": "2026-09-21T21:16:02.740Z",
+  "last_status": "ok",
+  "drop": {
+    "deny_all": false,
+    "dropped": 0,
+    "counts": {
+      "packages": 0,
+      "advisories": 0,
+      "releases": 0,
+      "feeds": 0,
+      "errors": 0
+    },
+    "kinds": [],
+    "withheld": [
+      "watch"
+    ]
+  }
+}

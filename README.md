@@ -152,7 +152,18 @@ rewritten in place by the `commit` job — it is the only part of this file a ru
 and it is rendered from the decision record rather than from model prose.
 
 <!-- git-agent:begin -->
-_No run recorded yet. The first scheduled run fills this in._
+### As of 2026-09-21T21:15:41.716Z
+
+**7 to act on**
+
+- `GHSA-qw6h-vgh9-j6wx` — `express` `4.18.2` → `4.20.0` · affected, and we import express
+- `GHSA-rv95-896h-c2vc` — `express` `4.18.2` → `4.19.2` · affected, and we import express
+- `GHSA-r5fr-rjxr-66jc` — `lodash` `4.17.21` → `4.18.0` · affected, and we import merge
+- `GHSA-9hjg-9r4m-mvj7` — `requests` `2.31.0` → `2.32.4` · affected, and we import Session
+- `GHSA-9wx4-h78v-vm56` — `requests` `2.31.0` → `2.32.0` · affected, and we import Session
+- `PYSEC-2026-1872` — `requests` `2.31.0` → `2.32.4` · affected, and we import Session
+- `PYSEC-2026-1873` — `requests` `2.31.0` → `2.32.0` · affected, and we import Session
+
 <!-- git-agent:end -->
 
 <picture>
