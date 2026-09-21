@@ -719,6 +719,7 @@ tools/               the checks a human runs: invariants (per push) ·
 data/                state — all behind the gate except heartbeat.json
 history/             append-only: events · commands · runs (hash-chained)
 digest/              dated archive
+assets/              README artwork — hand-built SVG, light and dark, no external requests
 site/                index.html (digest view) · chat.html (composer)
 README.md            regenerated between markers
 SECURITY.md          what is in scope for a report, and what is not

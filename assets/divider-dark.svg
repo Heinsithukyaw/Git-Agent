@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 24" width="1200" height="24" role="img" aria-hidden="true">
+  <!--
+    Git Agent — section divider (dark). Geometry is identical to divider.svg;
+    only the palette changes, and it is the dark half of site/index.html
+    (@media prefers-color-scheme: dark). Keep the two files in step.
+  -->
+  <style>
+    .hair { stroke: #232a33; stroke-width: 1; fill: none; }
+    .acc { fill: #58a6ff; }
+  </style>
+  <path class="hair" d="M48 12 H568"/>
+  <path class="hair" d="M632 12 H1152"/>
+  <rect class="acc" x="595" y="7" width="10" height="10" rx="2"/>
+</svg>

@@ -1,0 +1,14 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 24" width="1200" height="24" role="img" aria-hidden="true">
+  <!--
+    Git Agent — section divider (light). One hairline, one break, one node: the
+    same interrupted trace the hero draws. Palette: site/index.html (:root).
+    Dark twin: divider-dark.svg.
+  -->
+  <style>
+    .hair { stroke: #e3e7ec; stroke-width: 1; fill: none; }
+    .acc { fill: #0b62d6; }
+  </style>
+  <path class="hair" d="M48 12 H568"/>
+  <path class="hair" d="M632 12 H1152"/>
+  <rect class="acc" x="595" y="7" width="10" height="10" rx="2"/>
+</svg>

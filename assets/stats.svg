@@ -1,0 +1,41 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 150" width="1200" height="150" role="img" aria-labelledby="statsTitle">
+  <!--
+    Git Agent — README stat strip (light).
+    Every number here is a property of the tree, not a measurement, so none of
+    them can drift: `dependencies` is empty in package.json; nothing in the tree
+    binds a port; the agent runs with no secret at all; and digest.yml is four
+    jobs because I1 forbids one job holding both a key and a write token.
+    Palette: site/index.html (:root). Dark twin: stats-dark.svg.
+  -->
+  <title id="statsTitle">Zero npm dependencies, zero servers, zero inbound ports, zero required secrets, four jobs per run</title>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .card { fill: #f7f9fb; stroke: #e3e7ec; stroke-width: 1; }
+    .ink { fill: #14181f; }
+    .muted { fill: #5b6675; }
+    .acc { fill: #0b62d6; }
+    .num { font-size: 42px; font-weight: 600; }
+    .lbl { font-size: 15px; }
+  </style>
+
+  <rect class="card" x="52.5"  y="14.5" width="207" height="121" rx="12"/>
+  <text class="mono num ink" x="156"  y="80" text-anchor="middle">0</text>
+  <text class="sans lbl muted" x="156"  y="108" text-anchor="middle">npm dependencies</text>
+
+  <rect class="card" x="274.5" y="14.5" width="207" height="121" rx="12"/>
+  <text class="mono num ink" x="378"  y="80" text-anchor="middle">0</text>
+  <text class="sans lbl muted" x="378"  y="108" text-anchor="middle">servers</text>
+
+  <rect class="card" x="496.5" y="14.5" width="207" height="121" rx="12"/>
+  <text class="mono num ink" x="600"  y="80" text-anchor="middle">0</text>
+  <text class="sans lbl muted" x="600"  y="108" text-anchor="middle">inbound ports</text>
+
+  <rect class="card" x="718.5" y="14.5" width="207" height="121" rx="12"/>
+  <text class="mono num ink" x="822"  y="80" text-anchor="middle">0</text>
+  <text class="sans lbl muted" x="822"  y="108" text-anchor="middle">required secrets</text>
+
+  <rect class="card" x="940.5" y="14.5" width="207" height="121" rx="12"/>
+  <text class="mono num acc" x="1044" y="80" text-anchor="middle">4</text>
+  <text class="sans lbl muted" x="1044" y="108" text-anchor="middle">jobs per run</text>
+</svg>

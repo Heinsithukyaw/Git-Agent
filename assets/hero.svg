@@ -1,0 +1,96 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 366" width="1200" height="366" role="img" aria-labelledby="heroTitle heroDesc">
+  <!--
+    Git Agent — README hero (light).
+    The palette is the one in site/index.html (:root), so the artwork and the
+    Pages site are visibly the same product. The dark twin is hero-dark.svg.
+    No external references: this file must render inside an <img> with no network,
+    and no JavaScript runs there, so all motion is CSS on presentation attributes.
+    The glint is additive — with animation off the trace is fully drawn.
+    Type is sized for GitHub's ~948px content column, where this scales to ~0.79.
+  -->
+  <title id="heroTitle">One run, four jobs</title>
+  <desc id="heroDesc">fetch reads the world; narrate holds the model key; commit holds the write token; heartbeat holds the write token and runs only if fetch failed. No job holds both a key and a write token.</desc>
+  <style>
+    .sans { font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+    .ink { fill: #14181f; }
+    .muted { fill: #5b6675; }
+    .acc { fill: #0b62d6; }
+    .panel { fill: #f7f9fb; stroke: #e3e7ec; stroke-width: 1; }
+    .hair { stroke: #e3e7ec; stroke-width: 1; fill: none; }
+    .wire { stroke: #aab6c3; stroke-width: 2; fill: none; }
+    .stub { stroke: #c9d2dc; stroke-width: 1.5; fill: none; stroke-dasharray: 2 4; }
+    .node-read { fill: #f7f9fb; stroke: #a8b4c0; stroke-width: 2; }
+    .node-key { fill: #0b62d6; stroke: #0b62d6; stroke-width: 2; }
+    .node-write { fill: #14181f; stroke: #14181f; stroke-width: 2; }
+    .eyebrow { font-size: 14px; letter-spacing: 2.4px; }
+    .label { font-size: 14px; letter-spacing: 2px; }
+    .job { font-size: 19px; font-weight: 600; }
+    .priv { font-size: 15px; }
+    .gap { font-size: 12.5px; letter-spacing: 1.2px; }
+    .legend { font-size: 15px; }
+    .glint {
+      stroke: #0b62d6; stroke-width: 3; stroke-linecap: round; fill: none;
+      stroke-dasharray: 22 400; stroke-dashoffset: 440; opacity: 0;
+      animation: travel 8s linear infinite;
+    }
+    .g2 { animation-delay: 2s; }
+    .g3 { animation-delay: 4s; }
+    .g4 { animation-delay: 6s; }
+    @keyframes travel {
+      0%   { stroke-dashoffset: 440; opacity: 0; }
+      2%   { opacity: .9; }
+      22%  { opacity: .9; }
+      25%  { stroke-dashoffset: -40; opacity: 0; }
+      100% { stroke-dashoffset: -40; opacity: 0; }
+    }
+    @media (prefers-reduced-motion: reduce) { .glint { animation: none; opacity: 0; } }
+  </style>
+
+  <rect class="panel" x="0.5" y="0.5" width="1199" height="365" rx="14"/>
+
+  <text class="mono eyebrow muted" x="56" y="56">SERVERLESS · GIT-NATIVE · ZERO DEPENDENCIES</text>
+  <text class="mono eyebrow acc" x="1144" y="56" text-anchor="end">NO JOB HOLDS BOTH</text>
+  <path class="hair" d="M56 80 H1144"/>
+
+  <text class="mono label ink" x="56" y="116">ONE RUN · FOUR JOBS</text>
+
+  <!-- the normal path: fetch ──▶ narrate ──▶ commit, each hop carried by an artifact -->
+  <path class="wire" d="M210 170 H330"/>
+  <path class="wire" d="M430 170 H550"/>
+  <path class="wire" d="M570 170 H690"/>
+  <path class="wire" d="M790 170 H910"/>
+
+  <path class="glint"    d="M210 170 H330"/>
+  <path class="glint g2" d="M430 170 H550"/>
+  <path class="glint g3" d="M570 170 H690"/>
+  <path class="glint g4" d="M790 170 H910"/>
+
+  <text class="mono gap muted" x="380" y="175" text-anchor="middle">artifact</text>
+  <text class="mono gap muted" x="740" y="175" text-anchor="middle">artifact</text>
+
+  <rect class="node-read"  x="190" y="160" width="20" height="20" rx="5"/>
+  <rect class="node-key"   x="550" y="160" width="20" height="20" rx="5"/>
+  <rect class="node-write" x="910" y="160" width="20" height="20" rx="5"/>
+
+  <text class="mono job ink" x="200" y="212" text-anchor="middle">fetch</text>
+  <text class="sans priv muted" x="200" y="236" text-anchor="middle">read · no key</text>
+
+  <text class="mono job ink" x="560" y="212" text-anchor="middle">narrate</text>
+  <text class="sans priv muted" x="560" y="236" text-anchor="middle">read · <tspan class="acc">key</tspan></text>
+
+  <text class="mono job ink" x="920" y="212" text-anchor="middle">commit</text>
+  <text class="sans priv muted" x="920" y="236" text-anchor="middle">write · no key</text>
+
+  <!-- the fourth job hangs off fetch, and runs only when fetch failed -->
+  <path class="stub" d="M200 244 V268"/>
+  <rect class="node-write" x="190" y="270" width="20" height="20" rx="5"/>
+  <text class="mono job ink" x="200" y="322" text-anchor="middle">heartbeat</text>
+  <text class="sans priv muted" x="200" y="346" text-anchor="middle">write · no key</text>
+  <text class="mono gap muted" x="272" y="322">only if fetch failed</text>
+
+  <rect class="acc" x="968" y="334" width="10" height="10" rx="2"/>
+  <text class="mono legend ink" x="986" y="344">key</text>
+  <rect class="ink" x="1027" y="334" width="10" height="10" rx="2"/>
+  <text class="mono legend ink" x="1045" y="344">write token</text>
+</svg>
