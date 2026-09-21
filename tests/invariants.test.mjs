@@ -1477,16 +1477,20 @@ test('a join root that cannot be resolved is refused', () => {
   assert.match(rulesOf(result), /whose root is not a literal and cannot be resolved/);
 });
 
-test('a .. traversal is refused by the form clause, since the content clause excludes it', () => {
-  // `..` is excluded from the candidate test so that no false positive can come
-  // from a relative import, which means assertion 1 does not report this. It is a
-  // read target all the same, and the form clause is what catches it — otherwise
-  // it would slip through both clauses, which is the failure this whole task is
-  // about.
+test('a .. traversal is refused, and by resolution rather than by the form clause', () => {
+  // This case was pinned the other way round while the candidate test excluded
+  // `..` by spelling: the content clause was blind to it, so the form clause was
+  // what refused it. The exclusion is gone — a literal is a candidate when it
+  // *resolves* into a collector root — so the content clause sees it too, and the
+  // form clause defers rather than reporting one defect twice. The refusal is the
+  // same; what changed is which clause can see it, and that matters, because the
+  // spelling-based exclusion was the only thing letting a `..` literal pass a
+  // reader outside `READ_FUNCTIONS`, where no form clause exists to catch it.
   const src = `${PUBLIC_RENDERER_SRC}const w = readJson('data/../data/stack.json');\n`;
   const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
   assert.equal(result.ok, false);
-  assert.match(rulesOf(result), /is not a projected artifact/);
+  assert.match(rulesOf(result), /resolves into a collector root/);
+  assert.equal(result.violations.length, 1, `one defect, one finding: ${rulesOf(result)}`);
 });
 
 test('the stated limit, asserted rather than left silent: an unenumerated reader with a computed target passes', () => {
@@ -1506,10 +1510,21 @@ test('the stated limit, asserted rather than left silent: an unenumerated reader
   assert.equal(result.ok, true, 'the documented limit, not an oversight');
 });
 
-test('the same limit, one spelling over: a .. literal to an unenumerated reader passes', () => {
+test('a .. literal to an unenumerated reader is caught, which it was not', () => {
+  // This was pinned as a limit — "the same limit, one spelling over" — and it was
+  // not the same limit. The concat case above has *no* resolvable component and
+  // no enumerated name, so nothing in the check can see it; that one is
+  // structural. This one has a literal, and a literal is exactly what the content
+  // clause reads. It was invisible only because that clause excluded `..` by
+  // spelling, while `createReadStream` is in no function list for the form clause
+  // to reach: two clauses blind for two different reasons, and only one of them
+  // was structural. Corrected rather than left pinned, because a limit that reads
+  // as a design decision while actually being an oversight is the kind of thing
+  // this repository keeps finding.
   const src = `${PUBLIC_RENDERER_SRC}const stream = fs.createReadStream('data/../data/stack.json');\n`;
   const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
-  assert.equal(result.ok, true, 'the documented limit, not an oversight');
+  assert.equal(result.ok, false, 'the function is not the boundary; the path is');
+  assert.match(rulesOf(result), /resolves into a collector root/);
 });
 
 test('a literal that is the collector allowlist file is a collector path too', () => {
@@ -1537,6 +1552,257 @@ test('the collector roots are derived from the write allowlist, not restated', (
     checkPublicRendererReadsNoPrivatePath(rendererRoot(src)).ok,
     false,
     'a root with no file named under it anywhere in the check is still caught',
+  );
+});
+
+/* ------------- I16 v3: the verdict is the resolved path, not the spelling --- */
+
+/**
+ * The class, not the spellings.
+ *
+ * `bc737d0`'s commit title is *"Detect a private read by what it resolves to, not
+ * by how it is spelled"*, and three clauses were still deciding by spelling:
+ * `isProjected()` was a prefix test that never collapsed `..`, the candidate test
+ * excluded any literal containing `..`, and the `path.join` branch folded only its
+ * first argument. Each is the same error, and each made a traversal's verdict
+ * depend on how it was written rather than where it landed. The tell was two
+ * spellings of one resolved path with opposite verdicts:
+ *
+ *     path.join('digest', '..', 'data', 'stack.json')   RED
+ *     path.join('digest', '../data/stack.json')         GREEN
+ *
+ * Every case below returned `{ok: true}` before, and the reader named in each is
+ * deliberately varied — enumerated, unenumerated, a bare literal — because the
+ * point is that the *path* is the boundary and the function never was.
+ */
+const TRAVERSALS_RESOLVED = [
+  ['a literal', "const w = readJson('digest/../data/stack.json');"],
+  ['a literal into history', "const r = readRows('digest/../history/commands.jsonl');"],
+  ['a literal that is only `..`', "const e = fs.readdirSync('digest/..');"],
+  ['a literal that escapes the repository', "const p = fs.readFileSync('digest/../../../etc/passwd');"],
+  ['a literal with a leading `./`', "const q = readJson('./digest/../data/stack.json');"],
+  ['a join, `..` inside one argument', "const j = readJson(path.join('digest', '../data/stack.json'));"],
+  ['a join with a bare `..`', "const l = fs.readdirSync(path.join('digest', '..'));"],
+  ['an unenumerated reader', "const c = fs.createReadStream('digest/../data/stack.json');"],
+];
+
+/**
+ * Refused by a different clause, and worth separating for that reason: the join
+ * cannot be resolved at all, so there is nothing to resolve the traversal
+ * *against* — the components that did fold are checked instead. That clause is
+ * what the first version of the join branch omitted entirely.
+ */
+const TRAVERSAL_BESIDE_A_VARIABLE =
+  "const v = readJson(path.join('digest', name, '../data/stack.json'));";
+
+/**
+ * The one join spelling that was **already** refused before this fix, kept
+ * separate so the control below stays honest. `path.join('digest', '..', 'data')`
+ * resolves out of the projected set, but it is refused by the content clause
+ * catching the bare `'data'` component — which is why the join branch defers
+ * rather than reporting a second finding for the same defect. It is the other
+ * half of the tell: red while its one-argument spelling was green.
+ */
+const TRAVERSAL_BY_BARE_COMPONENT = "const k = fs.existsSync(path.join('digest', '..', 'data'));";
+
+test('every spelling of a traversal is refused, which none of them were', () => {
+  const all = [
+    ...TRAVERSALS_RESOLVED,
+    ['a variable tail', TRAVERSAL_BESIDE_A_VARIABLE],
+    ['a bare component', TRAVERSAL_BY_BARE_COMPONENT],
+  ];
+  for (const [label, line] of all) {
+    const src = `${PUBLIC_RENDERER_SRC}${line}\n`;
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+    assert.equal(result.ok, false, `${label}: ${JSON.stringify(result.violations)}`);
+  }
+});
+
+test('a bare component literal is named once, not twice', () => {
+  // The join branch defers to the content clause when a component literal is
+  // itself the finding, so one defect stays one finding. Asserted as a count,
+  // because a duplicate is invisible in a boolean.
+  const src = `${PUBLIC_RENDERER_SRC}${TRAVERSAL_BY_BARE_COMPONENT}\n`;
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.violations.length, 1, rulesOf(result));
+  assert.ok(result.violations.some((v) => v.target === 'data'), rulesOf(result));
+});
+
+test('the tell: two spellings of one resolved path no longer disagree', () => {
+  // The whole finding in one assertion — one path, two spellings, opposite
+  // verdicts, decided entirely by whether the traversal was written as one
+  // argument or three.
+  const split = `${PUBLIC_RENDERER_SRC}const a = readJson(path.join('digest', '..', 'data', 'stack.json'));\n`;
+  const joined = `${PUBLIC_RENDERER_SRC}const b = readJson(path.join('digest', '../data/stack.json'));\n`;
+  assert.equal(checkPublicRendererReadsNoPrivatePath(rendererRoot(split)).ok, false, 'split');
+  assert.equal(checkPublicRendererReadsNoPrivatePath(rendererRoot(joined)).ok, false, 'joined');
+});
+
+test('the resolution rule keeps legitimate code green, in both directions', () => {
+  // The half that decides whether this check survives contact with real code, and
+  // the reason the `..` exclusion existed at all. Resolution keeps every case it
+  // was protecting: a `..` that lands back inside the projected set is projected,
+  // a literal that starts with a collector root but resolves outside every root is
+  // not a private path, and a path beside the repository is not a path into it.
+  const cases = [
+    ['a `..` that resolves back inside digest/', "const a = readJson('digest/../digest/public-x.md');"],
+    ['a root-prefixed literal that resolves out of every root', "const b = fs.createReadStream('data/../lib/x.mjs');"],
+    ['a relative import named but never read', "const c = '../lib/public-surface.mjs';"],
+    ['a variable tail', "const d = fs.readFileSync(path.join('digest', name), 'utf8');"],
+    ['a variable tail behind a folded const root', "const E = 'digest';\nconst f = fs.readFileSync(path.join(E, name), 'utf8');"],
+    ['a path outside the repository', "const g = fs.createReadStream('../data/stack.json');"],
+  ];
+  for (const [label, line] of cases) {
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(`${PUBLIC_RENDERER_SRC}${line}\n`));
+    assert.equal(result.ok, true, `${label}: ${JSON.stringify(result.violations)}`);
+  }
+});
+
+/**
+ * N26: the name is not the binding.
+ *
+ * Rule 2 accepts any identifier spelled `PUBLIC_SUMMARY`, and `buildFacts()`'s
+ * one-argument arity — the property §I2 treats as *the* enforcement — is exactly
+ * what a shadowed constant defeats. With the import deleted and the constant
+ * re-declared from two harmless fragments, `readJson(PUBLIC_SUMMARY)` reads the
+ * renderer's own string while every other clause still reads as satisfied:
+ * neither fragment resolves into a collector root, the target is the declared
+ * name, and the floor is satisfied by the declaration itself.
+ */
+const SHADOWED_RENDERER = [
+  "import fs from 'node:fs';",
+  "import { PUBLIC_DIGEST_PREFIX } from '../lib/public-surface.mjs';",
+  "const A = 'da', B = 'ta/stack.json', PUBLIC_SUMMARY = A + '/' + B;",
+  "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+  'const summary = readJson(PUBLIC_SUMMARY);',
+  '',
+].join('\n');
+
+test('a renderer that binds PUBLIC_SUMMARY itself is refused', () => {
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(SHADOWED_RENDERER));
+  assert.equal(result.ok, false, 'the name is not the binding');
+  assert.match(rulesOf(result), /declares PUBLIC_SUMMARY locally/);
+});
+
+test('the declaration is refused even when nothing reads it', () => {
+  // Otherwise the floor passes on the declaration alone: a file that binds the name
+  // and reads nothing is the same defect as a file that reads nothing, which is
+  // what the floor exists to catch. The value is deliberately harmless — a
+  // projected path — so the only clause that can refuse this is the binding rule.
+  const src = [
+    "import fs from 'node:fs';",
+    "import { PUBLIC_DIGEST_PREFIX } from '../lib/public-surface.mjs';",
+    "const PUBLIC_SUMMARY = 'digest/public-x.md';",
+    "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+    '',
+  ].join('\n');
+  const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(src));
+  assert.equal(result.ok, false);
+  assert.match(rulesOf(result), /declares PUBLIC_SUMMARY locally/);
+  assert.equal(result.violations.length, 1, `one defect, one finding: ${rulesOf(result)}`);
+});
+
+test('a destructured binding of the name is refused too', () => {
+  // The names a destructuring binds are on the same side of the `=` as a plain
+  // declarator's, so the same test covers them rather than a second pattern.
+  const src = [
+    "import fs from 'node:fs';",
+    "import { PUBLIC_DIGEST_PREFIX } from '../lib/public-surface.mjs';",
+    'const { PUBLIC_SUMMARY } = cfg;',
+    "const files = fs.readdirSync('digest').filter((f) => f.startsWith(PUBLIC_DIGEST_PREFIX));",
+    'const s = readJson(PUBLIC_SUMMARY);',
+    '',
+  ].join('\n');
+  assert.equal(checkPublicRendererReadsNoPrivatePath(rendererRoot(src)).ok, false);
+});
+
+test('using the name, or a longer name, is not declaring it', () => {
+  // The false positive that would have made this rule useless, and the reason the
+  // test is applied to the binding half of each declarator: a pattern loose enough
+  // to catch the shadow also catches `const summary = readJson(PUBLIC_SUMMARY)`,
+  // which is how the fixture above — and any renderer written the natural way —
+  // reads the projected surface. Reporting that is how a check gets turned off.
+  //
+  // Run rather than asserted-about: the loose pattern is exercised here, so the
+  // justification for the declarator split cannot go stale without this failing.
+  assert.match(
+    PUBLIC_RENDERER_SRC,
+    /const[^;]*PUBLIC_SUMMARY/,
+    'the loose pattern must fire on the fixture, or the split has no reason to exist',
+  );
+  const cases = [
+    ['a use, not a binding', 'const summary2 = readJson(PUBLIC_SUMMARY);'],
+    ['a longer name bound locally', "const PUBLIC_SUMMARY_PATH = 'x';"],
+  ];
+  for (const [label, line] of cases) {
+    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(`${PUBLIC_RENDERER_SRC}${line}\n`));
+    assert.equal(result.ok, true, `${label}: ${JSON.stringify(result.violations)}`);
+  }
+});
+
+/**
+ * Load the check from a scratch copy of `lib/` with a replacement applied.
+ *
+ * A refusal proves nothing about *which* clause refused it. Disabling the clause
+ * and requiring the case to flip is what attributes it — the same reason
+ * assertion 2's marker carries a must-fail control.
+ */
+async function mutantCheck(replacements) {
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'i16-mutant-'));
+  fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
+  const file = path.join(dir, 'lib/invariants.mjs');
+  let src = fs.readFileSync(file, 'utf8');
+  for (const [from, to] of replacements) {
+    const patched = src.replace(from, to);
+    assert.notEqual(patched, src, `the needle must be present, or there is nothing to mutate: ${from}`);
+    src = patched;
+  }
+  fs.writeFileSync(file, src);
+  return import(pathToFileURL(file).href);
+}
+
+test('the must-fail control: resolution is what refuses the traversal spellings', async () => {
+  // `..` is pushed as an ordinary segment instead of being collapsed — the
+  // spelling-based behaviour the whole class came from. Every case must flip
+  // green: if one stays red, resolution was not what refused it, and the cases
+  // above are testing something other than what they claim.
+  const mutant = await mutantCheck([
+    [
+      "    if (seg === '..') {\n      if (out.length === 0) return null;\n      out.pop();\n      continue;\n    }\n",
+      '',
+    ],
+  ]);
+  for (const [label, line] of TRAVERSALS_RESOLVED) {
+    const result = mutant.checkPublicRendererReadsNoPrivatePath(rendererRoot(`${PUBLIC_RENDERER_SRC}${line}\n`));
+    assert.equal(
+      result.ok,
+      true,
+      `${label} stayed red with the traversal uncollapsed, so resolution is not what refuses it`,
+    );
+  }
+});
+
+test('the must-fail control: the join-tail check is what refuses a traversal beside a variable', async () => {
+  const mutant = await mutantCheck([
+    ['(f) => f !== null && f.split(\'/\').includes(\'..\') && !isCandidatePath(f),', '() => false,'],
+  ]);
+  const result = mutant.checkPublicRendererReadsNoPrivatePath(
+    rendererRoot(`${PUBLIC_RENDERER_SRC}${TRAVERSAL_BESIDE_A_VARIABLE}\n`),
+  );
+  assert.equal(
+    result.ok,
+    true,
+    'the case stayed red with the traversal test disabled, so that clause is not what refuses it',
+  );
+});
+
+test('the must-fail control: the binding test is what refuses the shadowed name', async () => {
+  const mutant = await mutantCheck([['if (declaresName(text, SUMMARY_CONST)) {', 'if (false) {']]);
+  const result = mutant.checkPublicRendererReadsNoPrivatePath(rendererRoot(SHADOWED_RENDERER));
+  assert.equal(
+    result.ok,
+    true,
+    'the shadow stayed red with the binding test disabled, so the binding is not what refuses it',
   );
 });
 
