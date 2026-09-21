@@ -15,6 +15,7 @@ import assert from 'node:assert/strict';
 import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
+import { pathToFileURL } from 'node:url';
 import {
   parseYaml,
   checkOnePrivilegePerJob,
@@ -33,6 +34,7 @@ import {
   runAll,
 } from '../lib/invariants.mjs';
 import { CI_ALLOWLIST, COLLECTOR_ALLOWLIST } from '../lib/store.mjs';
+import { PUBLIC_DIGEST_PREFIX } from '../lib/public-surface.mjs';
 
 const ROOT = process.cwd();
 
@@ -1192,16 +1194,112 @@ test('importing PUBLIC_SUMMARY is not reading it', () => {
   assert.match(rulesOf(result), /never reads PUBLIC_SUMMARY/);
 });
 
-test('re-pointing PUBLIC_SUMMARY at a private path is caught in the source, not by import', () => {
-  // The allowlist is derived from this declaration, so the declaration needs its
-  // own guard: re-pointing it would otherwise widen the allowlist to match. And
-  // it has to read the *source* — an import would have been a tautology, and a
-  // branch a test can never make fire is not a check.
-  for (const declared of ['data/summary.json', 'data/stack.json', 'history/commands.jsonl']) {
-    const surface = `export const PUBLIC_SUMMARY = '${declared}';\nexport const PUBLIC_DIGEST_PREFIX = 'public-';\n`;
-    const result = checkPublicRendererReadsNoPrivatePath(rendererRoot(PUBLIC_RENDERER_SRC, surface));
+/**
+ * Assertion 2's guard is a **marker**, not a list.
+ *
+ * The guard exists because the permitted set in assertion 1 is derived from the
+ * `PUBLIC_SUMMARY` declaration — re-point the constant and the permitted set
+ * widens to match. The first version of the guard enumerated the private paths it
+ * knew about, which is N20's error a second time: re-pointing the declaration at
+ * `data/heartbeat.json`, `data/triage.jsonl` or `history/runs.jsonl` returned
+ * `{ok: true}` while the surface would have published each of them. It is now a
+ * presence rule — the declared basename must carry the marker the projection
+ * itself uses.
+ *
+ * These cases pin the six refusals, the two permissions, and the control that the
+ * refusals come from the marker clause rather than from somewhere else in the
+ * check.
+ */
+const PRIVATE_DECLARATIONS = [
+  // The three the old denylist enumerated, so the marker rule is shown to subsume
+  // the list rather than quietly drop it.
+  'data/summary.json',
+  'data/stack.json',
+  'history/commands.jsonl',
+  // The three it had never heard of, each of which it passed.
+  'data/heartbeat.json', // carries consecutive_failures
+  'data/triage.jsonl', // committed, append-only, endpoint response bodies
+  'history/runs.jsonl', // the private run chain
+];
+/** Carrying the marker is the declaration; these must stay permitted. */
+const MARKED_DECLARATIONS = ['data/public-summary.json', 'data/public-anything.json'];
+
+/** The surface fixture, tied to the real marker so the two cannot drift apart. */
+function surfaceFor(declared) {
+  return `export const PUBLIC_SUMMARY = '${declared}';\nexport const PUBLIC_DIGEST_PREFIX = '${PUBLIC_DIGEST_PREFIX}';\n`;
+}
+
+function declaredResult(declared) {
+  return checkPublicRendererReadsNoPrivatePath(rendererRoot(PUBLIC_RENDERER_SRC, surfaceFor(declared)));
+}
+
+test('re-pointing PUBLIC_SUMMARY at any private path is refused, enumerated or not', () => {
+  // Reading the *source* is load-bearing: an import would have been a tautology,
+  // and a branch a test can never make fire is not a check.
+  for (const declared of PRIVATE_DECLARATIONS) {
+    const result = declaredResult(declared);
     assert.equal(result.ok, false, declared);
-    assert.match(rulesOf(result), /PUBLIC_SUMMARY names a private path/, declared);
+    assert.ok(
+      result.violations.some((v) => v.rule.includes(declared)),
+      `${declared} must be named in the violation: ${rulesOf(result)}`,
+    );
+    assert.ok(
+      result.violations.some((v) => v.rule.includes(PUBLIC_DIGEST_PREFIX)),
+      `${declared}: the missing marker must be named too: ${rulesOf(result)}`,
+    );
+  }
+});
+
+test('a declared summary that carries the marker is permitted', () => {
+  for (const declared of MARKED_DECLARATIONS) {
+    const result = declaredResult(declared);
+    assert.equal(result.ok, true, `${declared}: carrying the marker is the declaration`);
+  }
+});
+
+test('the marker is the discriminator: each refusal flips green when the same path carries it', () => {
+  // The differential control, and the reason the cases above mean anything. Each
+  // pair is the same directory and the same basename, differing only by the
+  // marker. If a refusal were coming from assertion 1, from the floor, or from the
+  // digest enumeration, the marked half of the pair would be red as well — and it
+  // is not.
+  for (const declared of PRIVATE_DECLARATIONS) {
+    const marked = path.posix.join(
+      path.posix.dirname(declared),
+      `${PUBLIC_DIGEST_PREFIX}${path.posix.basename(declared)}`,
+    );
+    assert.equal(declaredResult(declared).ok, false, `${declared} must be refused`);
+    assert.equal(declaredResult(marked).ok, true, `${marked} must be permitted`);
+  }
+});
+
+test('the must-fail control: with the marker test forced to pass, every refusal turns green', async () => {
+  // A refusal proves nothing about *which* clause refused. So the check is copied
+  // into a scratch directory with the marker test replaced by `false` — the
+  // "always pass" mutant — and every case above must flip. If one stays red, it was
+  // never the marker that refused it, and the cases above are testing something
+  // other than what they claim.
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'i16-marker-mutant-'));
+  fs.cpSync(path.join(ROOT, 'lib'), path.join(dir, 'lib'), { recursive: true });
+  const file = path.join(dir, 'lib/invariants.mjs');
+  const src = fs.readFileSync(file, 'utf8');
+  const patched = src.replace(
+    '!path.posix.basename(declared[1]).startsWith(PUBLIC_DIGEST_PREFIX)',
+    'false',
+  );
+  assert.notEqual(patched, src, 'the marker test must be present, or there is nothing to mutate');
+  fs.writeFileSync(file, patched);
+
+  const mutant = await import(pathToFileURL(file).href);
+  for (const declared of PRIVATE_DECLARATIONS) {
+    const result = mutant.checkPublicRendererReadsNoPrivatePath(
+      rendererRoot(PUBLIC_RENDERER_SRC, surfaceFor(declared)),
+    );
+    assert.equal(
+      result.ok,
+      true,
+      `${declared} stayed red with the marker test disabled, so the marker is not what refuses it`,
+    );
   }
 });
 
