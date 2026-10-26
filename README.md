@@ -182,7 +182,7 @@ rewritten in place by the `commit` job — it is the only part of this file a ru
 and it is rendered from the decision record rather than from model prose.
 
 <!-- git-agent:begin -->
-### As of 2026-10-25T11:42:49.918Z
+### As of 2026-10-26T13:14:58.188Z
 
 **7 to act on**
 
