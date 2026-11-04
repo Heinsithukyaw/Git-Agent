@@ -1,13 +1,13 @@
 {
-  "generated_at": "2026-09-21T21:16:02.743Z",
-  "observed_at": "2026-09-21T21:15:41.716Z",
-  "advisories": 11,
+  "generated_at": "2026-11-04T14:41:03.959Z",
+  "observed_at": "2026-11-04T14:40:42.176Z",
+  "advisories": 10,
   "actionable": 7,
   "uncertain": 0,
   "clear": 0,
   "packages": 6,
   "sources_failed": 0,
-  "last_run_at": "2026-09-21T21:16:02.740Z",
+  "last_run_at": "2026-11-04T14:41:03.956Z",
   "last_status": "ok",
   "drop": {
     "deny_all": false,
